@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field
 
 from app.tools.models import ModelMessage, ToolCall, ToolSpec
 
-
 ProviderName = Literal[
     "openai",
     "anthropic",
