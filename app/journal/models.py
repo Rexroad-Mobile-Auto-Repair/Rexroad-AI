@@ -7,6 +7,10 @@ ActionStatus = Literal[
     "success",
     "error",
 ]
+EventType = Literal[
+    "user_request", "model_response", "tool_call", "tool_result",
+    "verification_request", "verification_response", "final_response", "error",
+]
 
 
 class ActionEntry(BaseModel):
@@ -36,3 +40,14 @@ class SessionSummary(BaseModel):
 class SessionDetail(BaseModel):
     summary: SessionSummary
     actions: list[ActionEntry]
+
+
+class AgentEvent(BaseModel):
+    id: str
+    session_id: str
+    sequence: int
+    event_type: EventType
+    action_id: str | None = None
+    tool_call_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime

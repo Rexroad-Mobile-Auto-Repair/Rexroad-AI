@@ -4,16 +4,20 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from app.journal.models import (
     ActionEntry,
     ActionStatus,
+    AgentEvent,
+    EventType,
     SessionSummary,
 )
 
 
 class ActionJournal:
+    EVENT_CONTENT_LIMIT = 2000
     def __init__(self, database_path: str | Path) -> None:
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(
@@ -44,6 +48,28 @@ class ActionJournal:
                     error TEXT,
                     created_at TEXT NOT NULL
                 )
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_events (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    action_id TEXT,
+                    tool_call_id TEXT,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (session_id, sequence)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_agent_events_session
+                ON agent_events (session_id, sequence)
                 """
             )
 
@@ -159,6 +185,75 @@ class ActionJournal:
             self._row_to_entry(row)
             for row in rows
         ]
+
+    def append_event(
+        self,
+        *,
+        session_id: str,
+        event_type: EventType,
+        action_id: str | None = None,
+        tool_call_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> AgentEvent:
+        event = AgentEvent(
+            id=str(uuid4()),
+            session_id=session_id,
+            sequence=0,
+            event_type=event_type,
+            action_id=action_id,
+            tool_call_id=tool_call_id,
+            payload=self._bounded_payload(payload or {}),
+            created_at=datetime.now(UTC),
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM agent_events WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            sequence = int(row["next_sequence"])
+            event.sequence = sequence
+            connection.execute(
+                """
+                INSERT INTO agent_events
+                    (id, session_id, sequence, event_type, action_id, tool_call_id, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (event.id, event.session_id, event.sequence, event.event_type, event.action_id,
+                 event.tool_call_id, json.dumps(event.payload, ensure_ascii=False, sort_keys=True),
+                 event.created_at.isoformat()),
+            )
+        return event
+
+    def list_events_for_session(self, session_id: str) -> list[AgentEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id, sequence, event_type, action_id, tool_call_id, payload_json, created_at
+                FROM agent_events WHERE session_id = ? ORDER BY sequence
+                """, (session_id,),
+            ).fetchall()
+        return [
+            AgentEvent(
+                id=row["id"], session_id=row["session_id"], sequence=row["sequence"],
+                event_type=row["event_type"], action_id=row["action_id"],
+                tool_call_id=row["tool_call_id"], payload=json.loads(row["payload_json"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    @classmethod
+    def _bounded_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        safe: dict[str, Any] = {}
+        for key, value in payload.items():
+            if isinstance(value, str):
+                safe[key] = value[: cls.EVENT_CONTENT_LIMIT]
+            elif isinstance(value, (int, float, bool)) or value is None:
+                safe[key] = value
+            else:
+                safe[key] = str(value)[: cls.EVENT_CONTENT_LIMIT]
+        return safe
 
     def list_recent(
         self,

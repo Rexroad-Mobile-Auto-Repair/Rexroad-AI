@@ -59,6 +59,13 @@ class AgentService:
 
         session_id = str(uuid4())
 
+        if self._journal is not None:
+            self._journal.append_event(
+                session_id=session_id,
+                event_type="user_request",
+                payload={"content": request.message},
+            )
+
         messages = [
             ModelMessage(
                 role="system",
@@ -81,16 +88,34 @@ class AgentService:
         verification_requested = False
 
         while True:
-            response = await provider.generate(
-                ModelRequest(
-                    model=model,
-                    messages=messages,
-                    tools=tool_specs,
+            try:
+                response = await provider.generate(
+                    ModelRequest(model=model, messages=messages, tools=tool_specs)
                 )
-            )
+            except Exception:
+                if self._journal is not None:
+                    self._journal.append_event(
+                        session_id=session_id,
+                        event_type="error",
+                        payload={"stage": "verification" if verification_requested else "provider"},
+                    )
+                raise
+
+            if self._journal is not None:
+                self._journal.append_event(
+                    session_id=session_id,
+                    event_type="model_response",
+                    payload={"provider": response.provider, "model": response.model, "content": response.content},
+                )
 
             if response.tool_calls:
                 if self._tools is None:
+                    if self._journal is not None:
+                        self._journal.append_event(
+                            session_id=session_id,
+                            event_type="error",
+                            payload={"stage": "tool_dispatch"},
+                        )
                     raise RuntimeError(
                         "Provider requested tools but no tool registry is configured"
                     )
@@ -98,6 +123,8 @@ class AgentService:
                 tool_rounds += 1
 
                 if tool_rounds > self._max_tool_rounds:
+                    if self._journal is not None:
+                        self._journal.append_event(session_id=session_id, event_type="error", payload={"stage": "loop_limit"})
                     raise AgentLoopLimitError(
                         f"Tool loop exceeded {self._max_tool_rounds} rounds"
                     )
@@ -114,6 +141,13 @@ class AgentService:
 
                 for tool_call in response.tool_calls:
                     tool = self._tools.get(tool_call.name)
+                    if self._journal is not None:
+                        self._journal.append_event(
+                            session_id=session_id,
+                            event_type="tool_call",
+                            tool_call_id=tool_call.id,
+                            payload={"tool": tool_call.name},
+                        )
 
                     try:
                         result = self._tools.execute(
@@ -121,8 +155,9 @@ class AgentService:
                             **tool_call.arguments,
                         )
                     except Exception as exc:
+                        action = None
                         if self._journal is not None:
-                            self._journal.record(
+                            action = self._journal.record(
                                 session_id=session_id,
                                 provider=response.provider,
                                 model=response.model,
@@ -131,6 +166,21 @@ class AgentService:
                                 arguments=tool_call.arguments,
                                 status="error",
                                 error=str(exc),
+                            )
+
+                        if self._journal is not None:
+                            self._journal.append_event(
+                                session_id=session_id,
+                                event_type="tool_result",
+                                tool_call_id=tool_call.id,
+                                payload={"status": "error"},
+                                action_id=action.id if action is not None else None,
+                            )
+                            self._journal.append_event(
+                                session_id=session_id,
+                                event_type="error",
+                                tool_call_id=tool_call.id,
+                                payload={"stage": "tool"},
                             )
 
                         raise
@@ -144,8 +194,9 @@ class AgentService:
                             default=str,
                         )
 
+                    action = None
                     if self._journal is not None:
-                        self._journal.record(
+                        action = self._journal.record(
                             session_id=session_id,
                             provider=response.provider,
                             model=response.model,
@@ -154,6 +205,14 @@ class AgentService:
                             arguments=tool_call.arguments,
                             status="success",
                             result_preview=content[:1000],
+                        )
+
+                        self._journal.append_event(
+                            session_id=session_id,
+                            event_type="tool_result",
+                            action_id=action.id,
+                            tool_call_id=tool_call.id,
+                            payload={"status": "success"},
                         )
 
                     messages.append(
@@ -170,6 +229,13 @@ class AgentService:
             if used_tools and not verification_requested:
                 verification_requested = True
 
+                if self._journal is not None:
+                    self._journal.append_event(
+                        session_id=session_id,
+                        event_type="verification_request",
+                        payload={"reason": "tool_evidence_review"},
+                    )
+
                 messages.append(
                     ModelMessage(
                         role="assistant",
@@ -185,6 +251,19 @@ class AgentService:
                 )
 
                 continue
+
+            if self._journal is not None:
+                self._journal.append_event(
+                    session_id=session_id,
+                    event_type="verification_response" if verification_requested else "final_response",
+                    payload={"provider": response.provider, "model": response.model, "content": response.content},
+                )
+                if verification_requested:
+                    self._journal.append_event(
+                        session_id=session_id,
+                        event_type="final_response",
+                        payload={"provider": response.provider, "model": response.model, "content": response.content},
+                    )
 
             return AgentQueryResponse(
                 provider=response.provider,
