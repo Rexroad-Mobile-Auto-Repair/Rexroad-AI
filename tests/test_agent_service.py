@@ -139,7 +139,7 @@ async def test_agent_executes_requested_tool_and_returns_final_answer() -> None:
     )
 
     assert response.content == "The repository is clean."
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 3
 
     second_request = provider.requests[1]
 
@@ -218,3 +218,4 @@ async def test_agent_stops_runaway_tool_loop() -> None:
                 message="Keep checking forever.",
             )
         )
+
