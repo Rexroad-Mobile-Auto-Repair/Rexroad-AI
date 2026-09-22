@@ -12,6 +12,7 @@ class FakeAgentService:
         return AgentQueryResponse(
             provider="openai_compatible",
             model="qwen3-coder-30b-a3b-instruct",
+            session_id="session-test",
             content=f"response to: {request.message}",
         )
 
@@ -36,5 +37,6 @@ def test_agent_query_endpoint(monkeypatch) -> None:
     assert response.json() == {
         "provider": "openai_compatible",
         "model": "qwen3-coder-30b-a3b-instruct",
+        "session_id": "session-test",
         "content": "response to: Hello Rexroad AI",
     }

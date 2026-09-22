@@ -73,6 +73,13 @@ async def journal(
     return action_journal.list_recent(limit=limit)
 
 
+@app.get("/journal/session/{session_id}")
+async def journal_session(
+    session_id: str,
+) -> list[ActionEntry]:
+    return action_journal.list_session(session_id)
+
+
 @app.post("/agent/query")
 async def agent_query(
     request: AgentQueryRequest,

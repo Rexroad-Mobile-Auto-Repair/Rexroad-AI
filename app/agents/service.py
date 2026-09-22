@@ -69,6 +69,7 @@ class AgentService:
                 return AgentQueryResponse(
                     provider=response.provider,
                     model=response.model,
+                    session_id=session_id,
                     content=response.content,
                 )
 

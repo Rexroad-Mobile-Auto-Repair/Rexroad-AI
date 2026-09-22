@@ -12,4 +12,5 @@ class AgentQueryRequest(BaseModel):
 class AgentQueryResponse(BaseModel):
     provider: ProviderName
     model: str
+    session_id: str
     content: str
