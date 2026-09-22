@@ -1,9 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
 from app.config import Settings
-from app.journal.models import ActionEntry, SessionSummary
+from app.journal.models import ActionEntry, SessionDetail, SessionSummary
 from app.journal.store import ActionJournal
 from app.policy.factory import build_workspace_registry
 from app.providers.factory import build_provider_registry, get_default_model
@@ -73,6 +73,23 @@ async def sessions(
     return action_journal.list_sessions(limit=limit)
 
 
+@app.get("/sessions/{session_id}")
+async def session_detail(
+    session_id: str,
+) -> SessionDetail:
+    summary = action_journal.get_session(session_id)
+
+    if summary is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+        )
+
+    return SessionDetail(
+        summary=summary,
+        actions=action_journal.list_session(session_id),
+    )
+
 @app.get("/journal")
 async def journal(
     limit: int = 50,
@@ -92,3 +109,5 @@ async def agent_query(
     request: AgentQueryRequest,
 ) -> AgentQueryResponse:
     return await agent_service.query(request)
+
+

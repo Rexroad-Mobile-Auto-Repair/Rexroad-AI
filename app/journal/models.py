@@ -32,3 +32,7 @@ class SessionSummary(BaseModel):
     error_count: int
     started_at: datetime
     last_action_at: datetime
+
+class SessionDetail(BaseModel):
+    summary: SessionSummary
+    actions: list[ActionEntry]

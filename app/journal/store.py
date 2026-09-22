@@ -253,6 +253,56 @@ class ActionJournal:
             for row in rows
         ]
 
+    def get_session(
+        self,
+        session_id: str,
+    ) -> SessionSummary | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    session_id,
+                    MIN(provider) AS provider,
+                    MIN(model) AS model,
+                    COUNT(*) AS action_count,
+                    SUM(
+                        CASE
+                            WHEN status = 'success' THEN 1
+                            ELSE 0
+                        END
+                    ) AS success_count,
+                    SUM(
+                        CASE
+                            WHEN status = 'error' THEN 1
+                            ELSE 0
+                        END
+                    ) AS error_count,
+                    MIN(created_at) AS started_at,
+                    MAX(created_at) AS last_action_at
+                FROM action_journal
+                WHERE session_id = ?
+                GROUP BY session_id
+                """,
+                (session_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return SessionSummary(
+            session_id=row["session_id"],
+            provider=row["provider"],
+            model=row["model"],
+            action_count=row["action_count"],
+            success_count=row["success_count"],
+            error_count=row["error_count"],
+            started_at=datetime.fromisoformat(
+                row["started_at"]
+            ),
+            last_action_at=datetime.fromisoformat(
+                row["last_action_at"]
+            ),
+        )
     @staticmethod
     def _row_to_entry(
         row: sqlite3.Row,
@@ -274,3 +324,4 @@ class ActionJournal:
                 row["created_at"]
             ),
         )
+
