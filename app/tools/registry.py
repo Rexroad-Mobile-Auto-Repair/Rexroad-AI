@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from app.tools.models import ToolSpec
 
-
 ToolPermission = Literal["read"]
 
 

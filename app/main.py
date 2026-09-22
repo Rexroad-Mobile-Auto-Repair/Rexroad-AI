@@ -3,8 +3,12 @@ from fastapi import FastAPI
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
 from app.config import Settings
+from app.policy.factory import build_workspace_registry
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
+from app.tools.factory import build_tool_registry
+from app.tools.filesystem import ReadOnlyFilesystem
+from app.tools.git import ReadOnlyGit
 
 app = FastAPI(
     title="Rexroad AI",
@@ -12,8 +16,19 @@ app = FastAPI(
 )
 
 settings = Settings()
+
 provider_registry = build_provider_registry(settings)
-agent_service = AgentService(settings, provider_registry)
+
+workspace_registry = build_workspace_registry(settings)
+filesystem = ReadOnlyFilesystem(workspace_registry)
+git = ReadOnlyGit(workspace_registry)
+tool_registry = build_tool_registry(filesystem, git)
+
+agent_service = AgentService(
+    settings,
+    provider_registry,
+    tools=tool_registry,
+)
 
 
 @app.get("/health")
