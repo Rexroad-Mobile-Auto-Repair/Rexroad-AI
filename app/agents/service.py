@@ -8,6 +8,7 @@ from app.config import Settings
 from app.context.builder import ContextBudgetError, ContextBuilder
 from app.context.models import ContextRequest
 from app.journal.store import ActionJournal
+from app.knowledge.serialization import serialize_search_results
 from app.providers.factory import get_default_model
 from app.providers.models import ModelRequest
 from app.providers.registry import ProviderRegistry
@@ -209,6 +210,8 @@ class AgentService:
 
                     if isinstance(result, str):
                         content = result
+                    elif tool_call.name == "knowledge.search":
+                        content = serialize_search_results(result)
                     else:
                         content = json.dumps(
                             result,
