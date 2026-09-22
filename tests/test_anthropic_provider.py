@@ -5,6 +5,7 @@ import pytest
 
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.models import ModelRequest
+from app.tools.models import ModelMessage
 
 
 @pytest.mark.asyncio
@@ -35,10 +36,10 @@ async def test_anthropic_generate() -> None:
     request = ModelRequest(
         model="test-model",
         messages=[
-            {
-                "role": "user",
-                "content": "Hello",
-            }
+            ModelMessage(
+                role="user",
+                content="Hello",
+            )
         ],
         temperature=0.0,
     )
@@ -89,3 +90,6 @@ async def test_anthropic_health_check_failure() -> None:
     )
 
     assert await provider.health_check() is False
+
+
+

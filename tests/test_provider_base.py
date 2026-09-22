@@ -2,6 +2,7 @@ import pytest
 
 from app.providers.base import ModelProvider
 from app.providers.models import ModelRequest, ModelResponse
+from app.tools.models import ModelMessage
 
 
 class FakeProvider(ModelProvider):
@@ -25,10 +26,10 @@ async def test_provider_contract() -> None:
     request = ModelRequest(
         model="test-model",
         messages=[
-            {
-                "role": "user",
-                "content": "Hello",
-            }
+            ModelMessage(
+                role="user",
+                content="Hello",
+            )
         ],
     )
 
@@ -38,3 +39,6 @@ async def test_provider_contract() -> None:
     assert response.model == "test-model"
     assert response.content == "test response"
     assert await provider.health_check() is True
+
+
+

@@ -3,6 +3,7 @@ from app.config import Settings
 from app.providers.factory import get_default_model
 from app.providers.models import ModelRequest
 from app.providers.registry import ProviderRegistry
+from app.tools.models import ModelMessage
 
 
 class AgentService:
@@ -27,10 +28,10 @@ class AgentService:
             ModelRequest(
                 model=model,
                 messages=[
-                    {
-                        "role": "user",
-                        "content": request.message,
-                    }
+                    ModelMessage(
+                        role="user",
+                        content=request.message,
+                    )
                 ],
             )
         )

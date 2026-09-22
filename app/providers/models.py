@@ -1,8 +1,8 @@
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.tools.models import ToolCall, ToolSpec
+from app.tools.models import ModelMessage, ToolCall, ToolSpec
 
 
 ProviderName = Literal[
@@ -15,7 +15,7 @@ ProviderName = Literal[
 
 class ModelRequest(BaseModel):
     model: str
-    messages: list[dict[str, str]]
+    messages: list[ModelMessage]
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     tools: list[ToolSpec] = Field(default_factory=list)
 

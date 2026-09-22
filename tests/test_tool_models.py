@@ -1,19 +1,21 @@
 from app.providers.models import ModelRequest, ModelResponse
-from app.tools.models import ToolCall, ToolSpec
+from app.tools.models import ModelMessage, ToolCall, ToolSpec
 
 
 def test_model_request_defaults_to_no_tools() -> None:
     request = ModelRequest(
         model="test-model",
         messages=[
-            {
-                "role": "user",
-                "content": "Hello",
-            }
+            ModelMessage(
+                role="user",
+                content="Hello",
+            )
         ],
     )
 
     assert request.tools == []
+    assert request.messages[0].role == "user"
+    assert request.messages[0].content == "Hello"
 
 
 def test_model_request_accepts_tool_specs() -> None:
@@ -39,6 +41,19 @@ def test_model_request_accepts_tool_specs() -> None:
 
     assert request.tools[0].name == "git.status"
     assert request.tools[0].parameters["type"] == "object"
+
+
+def test_model_message_accepts_tool_result_metadata() -> None:
+    message = ModelMessage(
+        role="tool",
+        content="## main",
+        tool_call_id="call-1",
+        tool_name="git.status",
+    )
+
+    assert message.role == "tool"
+    assert message.tool_call_id == "call-1"
+    assert message.tool_name == "git.status"
 
 
 def test_model_response_defaults_to_no_tool_calls() -> None:

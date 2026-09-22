@@ -88,3 +88,5 @@ async def test_openai_compatible_health_check(
     )
 
     assert await provider.health_check() is True
+
+

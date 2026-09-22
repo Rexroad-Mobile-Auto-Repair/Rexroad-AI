@@ -78,3 +78,5 @@ async def test_ollama_health_check(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = OllamaProvider()
 
     assert await provider.health_check() is True
+
+

@@ -26,7 +26,7 @@ class OpenAICompatibleProvider(ModelProvider):
     async def generate(self, request: ModelRequest) -> ModelResponse:
         payload = {
             "model": request.model,
-            "messages": request.messages,
+            "messages": [message.model_dump(exclude_none=True) for message in request.messages],
             "temperature": request.temperature,
         }
 
@@ -57,3 +57,4 @@ class OpenAICompatibleProvider(ModelProvider):
             return False
 
         return True
+
