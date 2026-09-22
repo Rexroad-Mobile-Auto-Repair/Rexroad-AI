@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
 from app.config import Settings
-from app.journal.models import ActionEntry
+from app.journal.models import ActionEntry, SessionSummary
 from app.journal.store import ActionJournal
 from app.policy.factory import build_workspace_registry
 from app.providers.factory import build_provider_registry, get_default_model
@@ -64,6 +64,13 @@ async def providers() -> list[ProviderStatus]:
         )
 
     return results
+
+
+@app.get("/sessions")
+async def sessions(
+    limit: int = 50,
+) -> list[SessionSummary]:
+    return action_journal.list_sessions(limit=limit)
 
 
 @app.get("/journal")

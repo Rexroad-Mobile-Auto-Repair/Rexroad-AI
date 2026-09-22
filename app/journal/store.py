@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from app.journal.models import ActionEntry, ActionStatus
+from app.journal.models import (
+    ActionEntry,
+    ActionStatus,
+    SessionSummary,
+)
 
 
 class ActionJournal:
@@ -189,6 +193,63 @@ class ActionJournal:
 
         return [
             self._row_to_entry(row)
+            for row in rows
+        ]
+
+    def list_sessions(
+        self,
+        limit: int = 50,
+    ) -> list[SessionSummary]:
+        if limit < 1 or limit > 500:
+            raise ValueError(
+                "limit must be between 1 and 500"
+            )
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    session_id,
+                    MIN(provider) AS provider,
+                    MIN(model) AS model,
+                    COUNT(*) AS action_count,
+                    SUM(
+                        CASE
+                            WHEN status = 'success' THEN 1
+                            ELSE 0
+                        END
+                    ) AS success_count,
+                    SUM(
+                        CASE
+                            WHEN status = 'error' THEN 1
+                            ELSE 0
+                        END
+                    ) AS error_count,
+                    MIN(created_at) AS started_at,
+                    MAX(created_at) AS last_action_at
+                FROM action_journal
+                GROUP BY session_id
+                ORDER BY last_action_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return [
+            SessionSummary(
+                session_id=row["session_id"],
+                provider=row["provider"],
+                model=row["model"],
+                action_count=row["action_count"],
+                success_count=row["success_count"],
+                error_count=row["error_count"],
+                started_at=datetime.fromisoformat(
+                    row["started_at"]
+                ),
+                last_action_at=datetime.fromisoformat(
+                    row["last_action_at"]
+                ),
+            )
             for row in rows
         ]
 
