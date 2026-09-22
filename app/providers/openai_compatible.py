@@ -41,7 +41,7 @@ class OpenAICompatibleProvider(ModelProvider):
     def _message_payload(message: ModelMessage) -> dict:
         if message.role == "tool":
             if not message.tool_call_id:
-                raise ValueError("Tool messages require tool_call_id")
+                raise TypeError("Tool messages require tool_call_id")
 
             return {
                 "role": "tool",
@@ -78,14 +78,14 @@ class OpenAICompatibleProvider(ModelProvider):
             return arguments
 
         if not isinstance(arguments, str):
-            raise ValueError(
+            raise TypeError(
                 "Tool-call arguments must be a JSON object or JSON string"
             )
 
         parsed = json.loads(arguments)
 
         if not isinstance(parsed, dict):
-            raise ValueError(
+            raise TypeError(
                 "Tool-call arguments must decode to an object"
             )
 
@@ -148,4 +148,7 @@ class OpenAICompatibleProvider(ModelProvider):
             return False
 
         return True
+
+
+
 

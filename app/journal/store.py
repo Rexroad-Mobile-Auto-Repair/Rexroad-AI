@@ -51,6 +51,14 @@ class ActionJournal:
                 """
             )
 
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_action_journal_created_at
+                ON action_journal (created_at)
+                """
+            )
+
     def record(
         self,
         *,
@@ -144,22 +152,64 @@ class ActionJournal:
             ).fetchall()
 
         return [
-            ActionEntry(
-                id=row["id"],
-                session_id=row["session_id"],
-                provider=row["provider"],
-                model=row["model"],
-                tool=row["tool"],
-                permission=row["permission"],
-                arguments=json.loads(
-                    row["arguments_json"]
-                ),
-                status=row["status"],
-                result_preview=row["result_preview"],
-                error=row["error"],
-                created_at=datetime.fromisoformat(
-                    row["created_at"]
-                ),
-            )
+            self._row_to_entry(row)
             for row in rows
         ]
+
+    def list_recent(
+        self,
+        limit: int = 50,
+    ) -> list[ActionEntry]:
+        if limit < 1 or limit > 500:
+            raise ValueError(
+                "limit must be between 1 and 500"
+            )
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    id,
+                    session_id,
+                    provider,
+                    model,
+                    tool,
+                    permission,
+                    arguments_json,
+                    status,
+                    result_preview,
+                    error,
+                    created_at
+                FROM action_journal
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return [
+            self._row_to_entry(row)
+            for row in rows
+        ]
+
+    @staticmethod
+    def _row_to_entry(
+        row: sqlite3.Row,
+    ) -> ActionEntry:
+        return ActionEntry(
+            id=row["id"],
+            session_id=row["session_id"],
+            provider=row["provider"],
+            model=row["model"],
+            tool=row["tool"],
+            permission=row["permission"],
+            arguments=json.loads(
+                row["arguments_json"]
+            ),
+            status=row["status"],
+            result_preview=row["result_preview"],
+            error=row["error"],
+            created_at=datetime.fromisoformat(
+                row["created_at"]
+            ),
+        )

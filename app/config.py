@@ -27,4 +27,7 @@ class Settings(BaseSettings):
     seo_crawler_workspace: str = r"D:\Rexroad-SEO-Crawler"
     knowledge_workspace: str = r"D:\Rexroad-AI-Knowledge"
 
+    action_journal_path: str = "data/action_journal.sqlite3"
+
     request_timeout_seconds: float = Field(default=120.0, gt=0)
+
