@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.config import Settings
+from app.journal.store import ActionJournal
 from app.providers.factory import get_default_model
 from app.providers.models import ModelRequest
 from app.providers.registry import ProviderRegistry
@@ -21,11 +23,13 @@ class AgentService:
         settings: Settings,
         registry: ProviderRegistry,
         tools: ToolRegistry | None = None,
+        journal: ActionJournal | None = None,
         max_tool_rounds: int = 8,
     ) -> None:
         self._settings = settings
         self._registry = registry
         self._tools = tools
+        self._journal = journal
         self._max_tool_rounds = max_tool_rounds
 
     async def query(self, request: AgentQueryRequest) -> AgentQueryResponse:
@@ -36,6 +40,8 @@ class AgentService:
             self._settings,
             provider_name,
         )
+
+        session_id = str(uuid4())
 
         messages = [
             ModelMessage(
@@ -80,10 +86,27 @@ class AgentService:
             )
 
             for tool_call in response.tool_calls:
-                result = self._tools.execute(
-                    tool_call.name,
-                    **tool_call.arguments,
-                )
+                tool = self._tools.get(tool_call.name)
+
+                try:
+                    result = self._tools.execute(
+                        tool_call.name,
+                        **tool_call.arguments,
+                    )
+                except Exception as exc:
+                    if self._journal is not None:
+                        self._journal.record(
+                            session_id=session_id,
+                            provider=response.provider,
+                            model=response.model,
+                            tool=tool_call.name,
+                            permission=tool.permission,
+                            arguments=tool_call.arguments,
+                            status="error",
+                            error=str(exc),
+                        )
+
+                    raise
 
                 if isinstance(result, str):
                     content = result
@@ -92,6 +115,18 @@ class AgentService:
                         result,
                         ensure_ascii=False,
                         default=str,
+                    )
+
+                if self._journal is not None:
+                    self._journal.record(
+                        session_id=session_id,
+                        provider=response.provider,
+                        model=response.model,
+                        tool=tool_call.name,
+                        permission=tool.permission,
+                        arguments=tool_call.arguments,
+                        status="success",
+                        result_preview=content[:1000],
                     )
 
                 messages.append(
