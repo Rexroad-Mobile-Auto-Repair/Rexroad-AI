@@ -43,8 +43,8 @@ class AcceptanceObservationCase(BaseModel):
 class AcceptanceObservationResult(BaseModel):
     case_id: str
     workspace: str
-    mode: Literal["lexical"] = "lexical"
-    status: Literal["observed", "prerequisite_unavailable", "error"]
+    mode: Literal["lexical", "semantic", "hybrid"] = "lexical"
+    status: Literal["observed", "prerequisite_unavailable", "error", "skipped"]
     target_file_path: str
     target_symbol_name: str | None = None
     observed_rank: int | None = None
@@ -54,4 +54,5 @@ class AcceptanceObservationResult(BaseModel):
     repeatable: bool | None = None
     duration_ms: float | None = None
     safe_reason: str | None = None
+    capability_status: str | None = None
     ordered_result_ids: list[str] = Field(default_factory=list)

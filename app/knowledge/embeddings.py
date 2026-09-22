@@ -75,3 +75,12 @@ class OpenAICompatibleEmbeddingProvider:
             raise RuntimeError("Embedding provider returned inconsistent dimensions")
         self._dimensions = dimensions
         return [[float(value) for value in vector] for vector in vectors]
+
+
+def build_embedding_provider(settings: object) -> EmbeddingProvider:
+    return OpenAICompatibleEmbeddingProvider(
+        settings.local_openai_base_url,
+        settings.local_embedding_model,
+        settings.local_openai_api_key,
+        settings.request_timeout_seconds,
+    )

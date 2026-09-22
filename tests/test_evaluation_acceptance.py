@@ -135,3 +135,20 @@ def test_assertion_prerequisite_status_is_nonzero(monkeypatch):
         "observations": [],
     })
     assert main([]) == 1
+
+
+def test_optional_capability_skip_is_nonfatal_and_mode_is_forwarded(monkeypatch):
+    from app.evaluation import acceptance
+    seen = []
+    def fake_run(settings, workspace, mode):
+        seen.append(mode)
+        return {"workspace": workspace, "status": "ok", "assertions": [{"status": "passed"}],
+                "observations": [{"status": "skipped", "mode": mode}]}
+    monkeypatch.setattr(acceptance, "run_acceptance", fake_run)
+    assert main(["--mode", "semantic"]) == 0
+    assert seen == ["semantic"]
+
+
+def test_invalid_mode_is_rejected():
+    with pytest.raises(SystemExit):
+        main(["--mode", "invalid"])
