@@ -2,7 +2,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ProviderName = Literal["openai", "anthropic", "ollama"]
+ProviderName = Literal[
+    "openai",
+    "anthropic",
+    "ollama",
+    "openai_compatible",
+]
 
 
 class ModelRequest(BaseModel):
