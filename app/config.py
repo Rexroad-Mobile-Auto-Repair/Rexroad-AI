@@ -33,3 +33,6 @@ class Settings(BaseSettings):
 
     request_timeout_seconds: float = Field(default=120.0, gt=0)
 
+    model_context_byte_budget: int = Field(default=65536, gt=0)
+    model_tool_result_byte_budget: int = Field(default=16384, gt=0)
+

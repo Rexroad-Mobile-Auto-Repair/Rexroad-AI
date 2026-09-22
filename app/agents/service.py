@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.config import Settings
+from app.context.builder import ContextBudgetError, ContextBuilder
+from app.context.models import ContextRequest
 from app.journal.store import ActionJournal
 from app.providers.factory import get_default_model
 from app.providers.models import ModelRequest
@@ -41,12 +43,14 @@ class AgentService:
         tools: ToolRegistry | None = None,
         journal: ActionJournal | None = None,
         max_tool_rounds: int = 8,
+        context_builder: ContextBuilder | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
         self._tools = tools
         self._journal = journal
         self._max_tool_rounds = max_tool_rounds
+        self._context_builder = context_builder or ContextBuilder()
 
     async def query(self, request: AgentQueryRequest) -> AgentQueryResponse:
         provider_name = request.provider or self._settings.default_provider
@@ -89,9 +93,24 @@ class AgentService:
 
         while True:
             try:
-                response = await provider.generate(
-                    ModelRequest(model=model, messages=messages, tools=tool_specs)
+                context = self._context_builder.build(
+                    ContextRequest(
+                        messages=messages,
+                        total_byte_budget=self._settings.model_context_byte_budget,
+                        tool_result_byte_budget=self._settings.model_tool_result_byte_budget,
+                    )
                 )
+                response = await provider.generate(
+                    ModelRequest(model=model, messages=context.messages, tools=tool_specs)
+                )
+            except ContextBudgetError:
+                if self._journal is not None:
+                    self._journal.append_event(
+                        session_id=session_id,
+                        event_type="error",
+                        payload={"stage": "context"},
+                    )
+                raise
             except Exception:
                 if self._journal is not None:
                     self._journal.append_event(
