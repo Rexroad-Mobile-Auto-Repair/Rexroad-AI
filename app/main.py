@@ -3,6 +3,8 @@ from fastapi import FastAPI, HTTPException
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
 from app.config import Settings
+from app.diagnostics.models import DoctorReport
+from app.diagnostics.service import build_local_diagnostics
 from app.journal.models import ActionEntry, SessionDetail, SessionSummary
 from app.journal.store import ActionJournal
 from app.knowledge.embeddings import OpenAICompatibleEmbeddingProvider
@@ -50,6 +52,7 @@ agent_service = AgentService(
     tools=tool_registry,
     journal=action_journal,
 )
+diagnostics = build_local_diagnostics(settings)
 
 
 @app.get("/health")
@@ -59,6 +62,11 @@ async def health() -> dict[str, str]:
         "service": "rexroad-ai",
         "version": "0.1.0",
     }
+
+
+@app.get("/system/doctor")
+async def system_doctor() -> DoctorReport:
+    return await diagnostics.report()
 
 
 @app.get("/providers")

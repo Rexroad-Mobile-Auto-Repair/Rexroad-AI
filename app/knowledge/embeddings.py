@@ -45,7 +45,11 @@ class OpenAICompatibleEmbeddingProvider:
 
     @property
     def identity(self) -> str:
-        return f"openai_compatible:{self._normalize_endpoint(self._base_url)}:{self._model}"
+        return f"openai_compatible:{self.endpoint_identity}:{self._model}"
+
+    @property
+    def endpoint_identity(self) -> str:
+        return self._normalize_endpoint(self._base_url)
 
     @property
     def dimensions(self) -> int | None:
