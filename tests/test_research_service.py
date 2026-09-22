@@ -10,6 +10,7 @@ from app.knowledge.models import Evidence, KnowledgeChunk, KnowledgeSearchResult
 from app.providers.base import ModelProvider
 from app.providers.models import ModelRequest, ModelResponse
 from app.providers.registry import ProviderRegistry
+from app.research.citations import parse_citation_aliases
 from app.research.models import ResearchRequest
 from app.research.service import RESEARCH_SYSTEM_PROMPT, ResearchService
 
@@ -45,15 +46,16 @@ class FakeKnowledge:
 class FakeProvider(ModelProvider):
     name = "openai_compatible"
 
-    def __init__(self, error: Exception | None = None):
+    def __init__(self, error: Exception | None = None, content: str = "researched answer"):
         self.requests: list[ModelRequest] = []
         self.error = error
+        self.content = content
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
         self.requests.append(request)
         if self.error:
             raise self.error
-        return ModelResponse(provider=self.name, model=request.model, content="researched answer")
+        return ModelResponse(provider=self.name, model=request.model, content=self.content)
 
     async def health_check(self) -> bool:
         return True
@@ -61,7 +63,8 @@ class FakeProvider(ModelProvider):
 
 def service(results, provider=None, **settings_kwargs):
     knowledge = FakeKnowledge(results)
-    provider = provider or FakeProvider()
+    content = settings_kwargs.pop("content", "researched answer")
+    provider = provider or FakeProvider(content=content)
     registry = ProviderRegistry()
     registry.register(provider)
     return ResearchService(Settings(_env_file=None, **settings_kwargs), knowledge, registry), knowledge, provider
@@ -220,6 +223,44 @@ async def test_provider_defaults_and_explicit_override():
     assert answer.provider == "ollama"
     assert answer.model == "custom-model"
     assert override.requests[0].model == "custom-model"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "status", "invalid", "citation_count"),
+    [
+        ("answer", "none", [], 0),
+        ("answer [E1] [E2] [E1]", "verified", [], 2),
+        ("answer [E1] [E999]", "invalid", ["E999"], 1),
+        ("answer [E1] [E0]", "invalid", ["[E0]"], 1),
+        ("answer [example]", "none", [], 0),
+    ],
+)
+async def test_citation_status_and_validation(content, status, invalid, citation_count):
+    research, _, _ = service([make_result("one"), make_result("two", rank=2)], content=content)
+    answer = await research.research(ResearchRequest(query="question", workspace="repo"))
+    assert answer.citation_status == status
+    assert answer.invalid_citation_aliases == invalid
+    assert len(answer.citations) == citation_count
+    assert all(citation.evidence.evidence_id in {"one", "two"} for citation in answer.citations)
+
+
+def test_citation_parser_is_exact_and_deterministic():
+    parsed = parse_citation_aliases("[E1] [E2] [E1] [E999] [E0] [e1] [E-1] [Eabc] [example]")
+    assert parsed.aliases == ["E1", "E2", "E999"]
+    assert parsed.invalid_tokens == ["[E0]", "[e1]", "[E-1]", "[Eabc]"]
+
+
+@pytest.mark.asyncio
+async def test_excluded_alias_is_not_valid():
+    research, _, _ = service(
+        [make_result("one"), make_result("two", rank=2)],
+        content="answer [E1] [E2]",
+        model_max_evidence_items=1,
+    )
+    answer = await research.research(ResearchRequest(query="question", workspace="repo"))
+    assert [citation.alias for citation in answer.citations] == ["E1"]
+    assert answer.invalid_citation_aliases == ["E2"]
 
 
 def test_research_service_has_no_tool_registry_dependency():

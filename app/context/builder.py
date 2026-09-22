@@ -163,15 +163,17 @@ class ContextBuilder:
     def _format_evidence(evidence: ApprovedEvidence, content: str, number: int) -> str:
         symbol = evidence.symbol_name or "(none)"
         safe_content = content.replace("</source-content>", "<\\/source-content>")
+        citation = f"citation: {evidence.citation_alias}\n" if evidence.citation_alias else ""
         return (
             f"--- evidence {number} ---\n"
-            f"workspace: {evidence.workspace}\n"
-            f"file: {evidence.file_path}\n"
-            f"lines: {evidence.line_start}-{evidence.line_end}\n"
-            f"symbol: {symbol}\n"
-            f"freshness: {evidence.freshness}\n"
-            f"retrieval: {evidence.retrieval_method}\n"
-            f"rank: {evidence.rank}\n"
+            + citation
+            + f"workspace: {evidence.workspace}\n"
+            + f"file: {evidence.file_path}\n"
+            + f"lines: {evidence.line_start}-{evidence.line_end}\n"
+            + f"symbol: {symbol}\n"
+            + f"freshness: {evidence.freshness}\n"
+            + f"retrieval: {evidence.retrieval_method}\n"
+            + f"rank: {evidence.rank}\n"
             "content:\n"
             "<source-content>\n"
             f"{safe_content}\n"

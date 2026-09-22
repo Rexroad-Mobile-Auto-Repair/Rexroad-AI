@@ -17,6 +17,7 @@ class ApprovedEvidence(BaseModel):
     freshness: Literal["current", "stale", "missing"]
     retrieval_method: Literal["lexical", "semantic", "hybrid"]
     rank: int = Field(ge=1)
+    citation_alias: str | None = None
 
     @field_validator("workspace", "file_path", "symbol_name")
     @classmethod
@@ -40,6 +41,13 @@ class ApprovedEvidence(BaseModel):
         if self.line_end < self.line_start:
             raise ValueError("line_end must be greater than or equal to line_start")
         return self
+
+    @field_validator("citation_alias")
+    @classmethod
+    def _validate_citation_alias(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"E[1-9][0-9]*", value) is None:
+            raise ValueError("citation_alias must use canonical E<n> syntax")
+        return value
 
 
 class ContextRequest(BaseModel):

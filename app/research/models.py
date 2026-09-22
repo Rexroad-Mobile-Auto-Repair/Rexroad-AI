@@ -12,6 +12,7 @@ ResearchStatus = Literal[
     "context_error",
     "provider_error",
 ]
+CitationStatus = Literal["none", "verified", "invalid"]
 
 
 class ResearchRequest(BaseModel):
@@ -58,6 +59,11 @@ class ResearchEvidenceReference(BaseModel):
         )
 
 
+class ResearchCitation(BaseModel):
+    alias: str
+    evidence: ResearchEvidenceReference
+
+
 class ResearchAnswer(BaseModel):
     status: ResearchStatus
     answer: str | None = None
@@ -65,3 +71,6 @@ class ResearchAnswer(BaseModel):
     model: str | None = None
     research_id: str
     evidence: list[ResearchEvidenceReference] = Field(default_factory=list)
+    citations: list[ResearchCitation] = Field(default_factory=list)
+    citation_status: CitationStatus = "none"
+    invalid_citation_aliases: list[str] = Field(default_factory=list)
