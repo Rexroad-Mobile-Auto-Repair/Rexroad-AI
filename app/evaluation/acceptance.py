@@ -87,7 +87,8 @@ def run_acceptance(settings: Settings, workspace: str = "seo_crawler") -> dict:
                 "status": "prerequisite_unavailable", "safe_reason": "index_empty"}
     assertion = RetrievalBenchmarkCase(case_id="exact-analysis-runs", workspace=workspace,
         query="list_analysis_runs_for_crawl", mode="lexical", top_k=10,
-        expected_file_path="app/storage/database.py", expected_symbol_name="list_analysis_runs_for_crawl")
+        expected_file_path="app/storage/database.py", expected_symbol_name="list_analysis_runs_for_crawl",
+        max_rank=1)
     observation = AcceptanceObservationCase(case_id="indexability-concept", workspace=workspace,
         query="how does Rexroad determine whether a crawled page can appear in Google search results",
         top_k=10, target_file_path="app/crawler/page_persistence.py", target_symbol_name="derive_indexability")
@@ -105,6 +106,7 @@ def run_acceptance(settings: Settings, workspace: str = "seo_crawler") -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", default="seo_crawler")
+    parser.add_argument("--mode", choices=["lexical"], default="lexical")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if not _safe_workspace(args.workspace):
