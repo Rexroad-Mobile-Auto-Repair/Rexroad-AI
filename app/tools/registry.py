@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from app.tools.models import ToolSpec
+
 
 ToolPermission = Literal["read"]
 
@@ -13,6 +16,7 @@ class ToolDefinition:
     description: str
     permission: ToolPermission
     handler: Callable[..., Any]
+    parameters: dict[str, Any] = field(default_factory=dict)
 
 
 class ToolNotRegisteredError(KeyError):
@@ -44,6 +48,16 @@ class ToolRegistry:
         return [
             self._tools[name]
             for name in self.names()
+        ]
+
+    def specs(self) -> list[ToolSpec]:
+        return [
+            ToolSpec(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+            )
+            for tool in self.definitions()
         ]
 
     def execute(

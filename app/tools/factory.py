@@ -15,6 +15,20 @@ def build_tool_registry(
             description="List files and directories inside an approved workspace.",
             permission="read",
             handler=filesystem.list,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "type": "string",
+                    },
+                    "relative_path": {
+                        "type": "string",
+                        "default": ".",
+                    },
+                },
+                "required": ["workspace"],
+                "additionalProperties": False,
+            },
         )
     )
 
@@ -24,6 +38,22 @@ def build_tool_registry(
             description="Read a text file inside an approved workspace.",
             permission="read",
             handler=filesystem.read,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "type": "string",
+                    },
+                    "relative_path": {
+                        "type": "string",
+                    },
+                },
+                "required": [
+                    "workspace",
+                    "relative_path",
+                ],
+                "additionalProperties": False,
+            },
         )
     )
 
@@ -33,6 +63,26 @@ def build_tool_registry(
             description="Search text files inside an approved workspace.",
             permission="read",
             handler=filesystem.search,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "type": "string",
+                    },
+                    "query": {
+                        "type": "string",
+                    },
+                    "relative_path": {
+                        "type": "string",
+                        "default": ".",
+                    },
+                },
+                "required": [
+                    "workspace",
+                    "query",
+                ],
+                "additionalProperties": False,
+            },
         )
     )
 
@@ -42,6 +92,16 @@ def build_tool_registry(
             description="Read the Git working tree and branch status.",
             permission="read",
             handler=git.status,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "type": "string",
+                    },
+                },
+                "required": ["workspace"],
+                "additionalProperties": False,
+            },
         )
     )
 
@@ -51,6 +111,16 @@ def build_tool_registry(
             description="Read the current Git branch.",
             permission="read",
             handler=git.branch,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "type": "string",
+                    },
+                },
+                "required": ["workspace"],
+                "additionalProperties": False,
+            },
         )
     )
 
@@ -60,6 +130,19 @@ def build_tool_registry(
             description="Read a Git diff without modifying the repository.",
             permission="read",
             handler=git.diff,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "type": "string",
+                    },
+                    "ref": {
+                        "type": ["string", "null"],
+                    },
+                },
+                "required": ["workspace"],
+                "additionalProperties": False,
+            },
         )
     )
 
@@ -69,6 +152,22 @@ def build_tool_registry(
             description="Read recent Git commit history.",
             permission="read",
             handler=git.log,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "type": "string",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 10,
+                    },
+                },
+                "required": ["workspace"],
+                "additionalProperties": False,
+            },
         )
     )
 
@@ -78,6 +177,20 @@ def build_tool_registry(
             description="Read details about a Git commit or reference.",
             permission="read",
             handler=git.show,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "type": "string",
+                    },
+                    "ref": {
+                        "type": "string",
+                        "default": "HEAD",
+                    },
+                },
+                "required": ["workspace"],
+                "additionalProperties": False,
+            },
         )
     )
 

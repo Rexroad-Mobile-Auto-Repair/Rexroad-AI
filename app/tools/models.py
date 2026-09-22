@@ -28,3 +28,4 @@ class ModelMessage(BaseModel):
     content: str = ""
     tool_call_id: str | None = None
     tool_name: str | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
