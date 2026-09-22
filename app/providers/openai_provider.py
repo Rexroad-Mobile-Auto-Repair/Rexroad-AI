@@ -30,7 +30,8 @@ class OpenAIProvider(ModelProvider):
     async def health_check(self) -> bool:
         try:
             await self._client.models.list()
-        except Exception:
+        except Exception:  # noqa: BLE001 - health checks must fail closed.
             return False
 
         return True
+
