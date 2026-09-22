@@ -98,6 +98,9 @@ class AgentService:
                         messages=messages,
                         total_byte_budget=self._settings.model_context_byte_budget,
                         tool_result_byte_budget=self._settings.model_tool_result_byte_budget,
+                        max_evidence_items=self._settings.model_max_evidence_items,
+                        total_evidence_byte_budget=self._settings.model_total_evidence_byte_budget,
+                        evidence_content_byte_budget=self._settings.model_evidence_content_byte_budget,
                     )
                 )
                 response = await provider.generate(

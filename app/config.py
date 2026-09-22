@@ -36,3 +36,7 @@ class Settings(BaseSettings):
     model_context_byte_budget: int = Field(default=65536, gt=0)
     model_tool_result_byte_budget: int = Field(default=16384, gt=0)
 
+    model_max_evidence_items: int = Field(default=8, gt=0)
+    model_total_evidence_byte_budget: int = Field(default=24576, gt=0)
+    model_evidence_content_byte_budget: int = Field(default=8192, gt=0)
+
