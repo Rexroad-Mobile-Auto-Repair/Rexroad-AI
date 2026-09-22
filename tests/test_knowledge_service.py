@@ -1,9 +1,12 @@
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from app.knowledge.service import KnowledgeService
+from app.knowledge.embeddings import OpenAICompatibleEmbeddingProvider
+from app.knowledge.models import KnowledgeChunk
+from app.knowledge.service import KnowledgeService, embedding_text
 from app.knowledge.store import KnowledgeStore
 from app.policy.workspaces import WorkspaceAccessError, WorkspaceRegistry
 
@@ -12,6 +15,31 @@ def build_service(tmp_path: Path, root: Path) -> KnowledgeService:
     return KnowledgeService(
         WorkspaceRegistry({"repo": root}),
         KnowledgeStore(tmp_path / "knowledge.sqlite3"),
+    )
+
+
+class FakeEmbeddingProvider:
+    identity = "fake:semantic-v1"
+    dimensions = 3
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls = getattr(self, "calls", 0) + 1
+        vectors = []
+        for text in texts:
+            value = text.casefold()
+            vectors.append([
+                1.0 if any(token in value for token in ("store", "persist", "database")) else 0.0,
+                1.0 if any(token in value for token in ("indexability", "google", "search")) else 0.0,
+                1.0 if any(token in value for token in ("identifier", "crawl_id")) else 0.0,
+            ])
+        return vectors
+
+
+def build_semantic_service(tmp_path: Path, root: Path) -> KnowledgeService:
+    return KnowledgeService(
+        WorkspaceRegistry({"repo": root}),
+        KnowledgeStore(tmp_path / "knowledge.sqlite3"),
+        FakeEmbeddingProvider(),
     )
 
 
@@ -200,3 +228,136 @@ def test_empty_index_and_invalid_limit_are_deterministic(tmp_path: Path) -> None
     assert service.search("repo", "anything") == []
     with pytest.raises(ValueError, match="between 1 and 50"):
         service.search("repo", "anything", limit=0)
+
+
+def test_semantic_retrieval_can_match_conceptual_language(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "storage.py").write_text("def record_analysis_run():\n    persist_to_database()\n", encoding="utf-8")
+    service = build_semantic_service(tmp_path, root)
+    service.index("repo")
+
+    results = service.search("repo", "where are results persisted", mode="semantic")
+
+    assert results[0].chunk.symbol_name == "record_analysis_run"
+    assert results[0].evidence.retrieval_method == "semantic"
+
+
+def test_hybrid_fuses_duplicates_and_exact_identifier_stays_first(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    write_source(root)
+    service = build_semantic_service(tmp_path, root)
+    service.index("repo")
+
+    results = service.search("repo", "build_internal_links_report", mode="hybrid")
+    chunk_ids = [result.chunk.chunk_id for result in results]
+
+    assert results[0].chunk.symbol_name == "build_internal_links_report"
+    assert results[0].evidence.retrieval_method == "hybrid"
+    assert len(chunk_ids) == len(set(chunk_ids))
+
+
+def test_semantic_ties_are_deterministic_and_lexical_default_is_unchanged(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "b.py").write_text("def beta():\n    return 'database'\n", encoding="utf-8")
+    (root / "a.py").write_text("def alpha():\n    return 'database'\n", encoding="utf-8")
+    service = build_semantic_service(tmp_path, root)
+    service.index("repo")
+
+    semantic = service.search("repo", "persisted results", mode="semantic")
+    lexical = service.search("repo", "database", mode="lexical")
+
+    assert [item.chunk.file_path for item in semantic] == ["a.py", "b.py"]
+    assert all(item.evidence.retrieval_method == "lexical" for item in lexical)
+
+
+def test_embedding_cache_invalidates_content_provider_and_dimensions(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    write_source(root)
+    provider = FakeEmbeddingProvider()
+    service = KnowledgeService(WorkspaceRegistry({"repo": root}), KnowledgeStore(tmp_path / "knowledge.sqlite3"), provider)
+    service.index("repo")
+    target = next(chunk for chunk in service._store.list_workspace("repo") if chunk.symbol_name == "build_internal_links_report")
+    first = service._store.list_embeddings([target.chunk_id])
+    source = root / "sample.py"
+    source.write_text(source.read_text(encoding="utf-8").replace("return crawl_id", "return 'changed'"), encoding="utf-8")
+    service.index("repo")
+    target = next(chunk for chunk in service._store.list_workspace("repo") if chunk.symbol_name == "build_internal_links_report")
+    changed = service._store.list_embeddings([target.chunk_id])
+    assert first != changed
+
+    provider.identity = "fake:semantic-v2"
+    service.index("repo")
+    target = next(chunk for chunk in service._store.list_workspace("repo") if chunk.symbol_name == "build_internal_links_report")
+    replaced = service._store.list_embeddings([target.chunk_id])
+    assert replaced[next(iter(replaced))]["provider_identity"].startswith("fake:semantic-v2|")
+
+
+def test_embedding_provider_identity_normalizes_endpoint_without_credentials() -> None:
+    first = OpenAICompatibleEmbeddingProvider("HTTP://LOCALHOST:80/v1/", "same-model", "secret-a")
+    equivalent = OpenAICompatibleEmbeddingProvider("http://localhost/v1", "same-model", "secret-b")
+    different = OpenAICompatibleEmbeddingProvider("http://127.0.0.1/v1", "same-model")
+
+    assert first.identity == equivalent.identity
+    assert first.identity != different.identity
+    assert "secret" not in first.identity
+
+
+def test_embedding_text_contains_structural_metadata_and_content() -> None:
+    value = KnowledgeChunk(
+        chunk_id="id", content="return value", workspace="repo", file_path="app/example.py",
+        language="python", line_start=1, line_end=1, symbol_name="example", symbol_type="function",
+        parent_symbol="Parent", content_hash="hash", indexed_at=datetime.now(UTC),
+    )
+    text = embedding_text(value)
+
+    assert "file: app/example.py" in text
+    assert "language: python" in text
+    assert "symbol: example" in text
+    assert "symbol_type: function" in text
+    assert "parent_symbol: Parent" in text
+    assert "return value" in text
+    assert text == embedding_text(value)
+
+
+def test_old_raw_content_cache_identity_is_not_reused(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    write_source(root)
+    provider = FakeEmbeddingProvider()
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite3")
+    service = KnowledgeService(WorkspaceRegistry({"repo": root}), store, provider)
+    service_without_provider = build_service(tmp_path, root)
+    service_without_provider.index("repo")
+    chunk = next(item for item in store.list_workspace("repo") if item.symbol_name == "build_internal_links_report")
+    store.upsert_embeddings([{
+        "chunk_id": chunk.chunk_id, "content_hash": chunk.content_hash,
+        "provider_identity": provider.identity, "dimensions": 3, "vector": [1.0, 0.0, 0.0],
+    }])
+
+    service.index("repo")
+
+    assert provider.calls == 1
+    record = store.list_embeddings([chunk.chunk_id])[chunk.chunk_id]
+    assert "representation:knowledge-chunk-structure-v1" in record["provider_identity"]
+
+
+def test_semantic_dimension_mismatch_is_ignored_safely(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    write_source(root)
+    service = build_semantic_service(tmp_path, root)
+    service.index("repo")
+    chunk = service._store.list_workspace("repo")[0]
+    with service._store._connect() as connection:
+        connection.execute(
+            "UPDATE knowledge_embeddings SET dimensions = 2 WHERE chunk_id = ?",
+            (chunk.chunk_id,),
+        )
+
+    results = service.search("repo", "persisted results", mode="semantic")
+
+    assert all(item.chunk.chunk_id != chunk.chunk_id for item in results)

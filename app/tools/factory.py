@@ -214,6 +214,11 @@ def build_tool_registry(
                             "maximum": 50,
                             "default": 10,
                         },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["lexical", "semantic", "hybrid"],
+                            "default": "lexical",
+                        },
                     },
                     "required": ["workspace", "query"],
                     "additionalProperties": False,

@@ -32,7 +32,7 @@ class Evidence(BaseModel):
     symbol_type: str | None = None
     content_hash: str
     git_commit_sha: str | None = None
-    retrieval_method: Literal["lexical"] = "lexical"
+    retrieval_method: Literal["lexical", "semantic", "hybrid"] = "lexical"
     score: float
     rank: int
     freshness: Literal["current", "stale", "missing"]

@@ -32,6 +32,17 @@ class KnowledgeStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+                    chunk_id TEXT PRIMARY KEY,
+                    content_hash TEXT NOT NULL,
+                    provider_identity TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    vector_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS knowledge_chunks_workspace
                 ON knowledge_chunks (workspace, file_path)
                 """
@@ -88,3 +99,39 @@ class KnowledgeStore:
                 chunk.chunk_id,
             ),
         )
+
+    def list_embeddings(self, chunk_ids: list[str]) -> dict[str, dict]:
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" for _ in chunk_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT chunk_id, content_hash, provider_identity, dimensions, vector_json "
+                f"FROM knowledge_embeddings WHERE chunk_id IN ({placeholders})",
+                chunk_ids,
+            ).fetchall()
+        return {row["chunk_id"]: dict(row) for row in rows}
+
+    def upsert_embeddings(self, records: list[dict]) -> None:
+        if not records:
+            return
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO knowledge_embeddings
+                    (chunk_id, content_hash, provider_identity, dimensions, vector_json)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chunk_id) DO UPDATE SET
+                    content_hash=excluded.content_hash,
+                    provider_identity=excluded.provider_identity,
+                    dimensions=excluded.dimensions,
+                    vector_json=excluded.vector_json
+                """,
+                [
+                    (
+                        item["chunk_id"], item["content_hash"], item["provider_identity"],
+                        item["dimensions"], json.dumps(item["vector"], separators=(",", ":")),
+                    )
+                    for item in records
+                ],
+            )

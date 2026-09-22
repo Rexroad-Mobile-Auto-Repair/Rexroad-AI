@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
+import math
 import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.knowledge.embeddings import EmbeddingProvider
 from app.knowledge.models import (
     Evidence,
     KnowledgeChunk,
@@ -22,6 +25,19 @@ IGNORED_DIRECTORIES = {
     "__pycache__", "build", "dist", "node_modules", "venv",
 }
 MAX_STRUCTURAL_LINES = 200
+EMBEDDING_REPRESENTATION_VERSION = "knowledge-chunk-structure-v1"
+
+
+def embedding_text(chunk: KnowledgeChunk) -> str:
+    lines = [f"file: {chunk.file_path}", f"language: {chunk.language}"]
+    if chunk.symbol_name:
+        lines.append(f"symbol: {chunk.symbol_name}")
+    if chunk.symbol_type:
+        lines.append(f"symbol_type: {chunk.symbol_type}")
+    if chunk.parent_symbol:
+        lines.append(f"parent_symbol: {chunk.parent_symbol}")
+    lines.extend(("source:", chunk.content))
+    return "\n".join(lines)
 
 
 class KnowledgeService:
@@ -29,9 +45,11 @@ class KnowledgeService:
         self,
         workspaces: WorkspaceRegistry,
         store: KnowledgeStore,
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self._workspaces = workspaces
         self._store = store
+        self._embedding_provider = embedding_provider
 
     def index(self, workspace: str) -> KnowledgeIndexResult:
         root = self._workspaces.get_root(workspace)
@@ -63,6 +81,7 @@ class KnowledgeService:
             chunks.extend(file_chunks)
 
         self._store.replace_workspace(workspace, chunks)
+        self._index_embeddings(chunks)
         return KnowledgeIndexResult(
             workspace=workspace,
             indexed_chunks=len(chunks),
@@ -76,20 +95,26 @@ class KnowledgeService:
         workspace: str,
         query: str,
         limit: int = 10,
+        mode: str = "lexical",
     ) -> list[KnowledgeSearchResult]:
         self._workspaces.get_root(workspace)
         if limit < 1 or limit > 50:
             raise ValueError("limit must be between 1 and 50")
+        if mode not in {"lexical", "semantic", "hybrid"}:
+            raise ValueError("mode must be lexical, semantic, or hybrid")
         query_tokens = self._tokens(query)
         if not query_tokens:
             return []
 
-        ranked: list[tuple[float, KnowledgeChunk]] = []
-        for chunk in self._store.list_workspace(workspace):
-            score = self._score(chunk, query, query_tokens)
-            if score > 0:
-                ranked.append((score, chunk))
-        ranked.sort(key=lambda item: (-item[0], item[1].file_path, item[1].line_start, item[1].chunk_id))
+        chunks = self._store.list_workspace(workspace)
+        lexical = self._lexical_ranked(chunks, query, query_tokens)
+        semantic = self._semantic_ranked(chunks, query) if mode != "lexical" else []
+        if mode == "lexical":
+            ranked = [(score, chunk, "lexical") for score, chunk in lexical]
+        elif mode == "semantic":
+            ranked = [(score, chunk, "semantic") for score, chunk in semantic]
+        else:
+            ranked = self._hybrid_ranked(lexical, semantic, query)
 
         return [
             KnowledgeSearchResult(
@@ -104,13 +129,88 @@ class KnowledgeService:
                     symbol_type=chunk.symbol_type,
                     content_hash=chunk.content_hash,
                     git_commit_sha=chunk.git_commit_sha,
+                    retrieval_method=retrieval_method,
                     score=score,
                     rank=rank,
                     freshness=self._freshness(chunk),
                 ),
             )
-            for rank, (score, chunk) in enumerate(ranked[:limit], start=1)
+            for rank, (score, chunk, retrieval_method) in enumerate(ranked[:limit], start=1)
         ]
+
+    def _index_embeddings(self, chunks: list[KnowledgeChunk]) -> None:
+        provider = self._embedding_provider
+        if provider is None or not chunks:
+            return
+        existing = self._store.list_embeddings([chunk.chunk_id for chunk in chunks])
+        reusable: list[dict] = []
+        missing: list[KnowledgeChunk] = []
+        expected_dimensions = provider.dimensions
+        for chunk in chunks:
+            record = existing.get(chunk.chunk_id)
+            if record and record["content_hash"] == chunk.content_hash and record["provider_identity"] == self._embedding_identity(provider) and (not expected_dimensions or record["dimensions"] == expected_dimensions):
+                reusable.append(record)
+            else:
+                missing.append(chunk)
+        if missing:
+            vectors = provider.embed([embedding_text(chunk) for chunk in missing])
+            dimensions = len(vectors[0]) if vectors else 0
+            if len(vectors) != len(missing) or dimensions == 0 or any(len(vector) != dimensions for vector in vectors):
+                raise RuntimeError("Embedding provider returned invalid vectors")
+            reusable.extend({"chunk_id": chunk.chunk_id, "content_hash": chunk.content_hash, "provider_identity": self._embedding_identity(provider), "dimensions": dimensions, "vector": vector} for chunk, vector in zip(missing, vectors, strict=True))
+        records = [item if "vector" in item else {**item, "vector": json.loads(item["vector_json"])} for item in reusable]
+        self._store.upsert_embeddings(records)
+
+    def _lexical_ranked(self, chunks: list[KnowledgeChunk], query: str, query_tokens: set[str]) -> list[tuple[float, KnowledgeChunk]]:
+        ranked = [(self._score(chunk, query, query_tokens), chunk) for chunk in chunks]
+        ranked = [item for item in ranked if item[0] > 0]
+        ranked.sort(key=lambda item: (-item[0], item[1].file_path, item[1].line_start, item[1].chunk_id))
+        return ranked
+
+    def _semantic_ranked(self, chunks: list[KnowledgeChunk], query: str) -> list[tuple[float, KnowledgeChunk]]:
+        provider = self._embedding_provider
+        if provider is None:
+            return []
+        query_vector = provider.embed([query])[0]
+        records = self._store.list_embeddings([chunk.chunk_id for chunk in chunks])
+        ranked: list[tuple[float, KnowledgeChunk]] = []
+        for chunk in chunks:
+            record = records.get(chunk.chunk_id)
+            if not record or record["content_hash"] != chunk.content_hash or record["provider_identity"] != self._embedding_identity(provider):
+                continue
+            vector = json.loads(record["vector_json"])
+            if record["dimensions"] != len(query_vector) or len(vector) != len(query_vector):
+                continue
+            ranked.append((self._cosine(query_vector, vector), chunk))
+        ranked.sort(key=lambda item: (-item[0], item[1].file_path, item[1].line_start, item[1].chunk_id))
+        return ranked
+
+    @staticmethod
+    def _embedding_identity(provider: EmbeddingProvider) -> str:
+        return f"{provider.identity}|representation:{EMBEDDING_REPRESENTATION_VERSION}"
+
+    @staticmethod
+    def _hybrid_ranked(lexical: list[tuple[float, KnowledgeChunk]], semantic: list[tuple[float, KnowledgeChunk]], query: str) -> list[tuple[float, KnowledgeChunk, str]]:
+        k = 60.0
+        fused: dict[str, tuple[float, KnowledgeChunk, bool]] = {}
+        for rank, (_, chunk) in enumerate(lexical, start=1):
+            fused[chunk.chunk_id] = (1.0 / (k + rank), chunk, query.casefold() in chunk.content.casefold())
+        for rank, (_, chunk) in enumerate(semantic, start=1):
+            prior = fused.get(chunk.chunk_id)
+            score = prior[0] if prior else 0.0
+            exact = prior[2] if prior else False
+            fused[chunk.chunk_id] = (score + 1.0 / (k + rank), chunk, exact)
+        ranked = [(score + (1.0 if exact else 0.0), chunk, "hybrid") for score, chunk, exact in fused.values()]
+        ranked.sort(key=lambda item: (-item[0], item[1].file_path, item[1].line_start, item[1].chunk_id))
+        return ranked
+
+    @staticmethod
+    def _cosine(left: list[float], right: list[float]) -> float:
+        left_norm = math.sqrt(sum(value * value for value in left))
+        right_norm = math.sqrt(sum(value * value for value in right))
+        if not left_norm or not right_norm:
+            return 0.0
+        return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
 
     def _python_chunks(
         self, workspace: str, root: Path, path: Path, content: str, git_commit_sha: str | None

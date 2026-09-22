@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     local_openai_base_url: str = "http://localhost:1234/v1"
     local_openai_api_key: str | None = None
     local_openai_model: str = "qwen3-coder-30b-a3b-instruct"
+    local_embedding_model: str = "text-embedding-nomic-embed-text-v1.5"
 
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen2.5-coder:14b"

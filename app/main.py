@@ -5,6 +5,7 @@ from app.agents.service import AgentService
 from app.config import Settings
 from app.journal.models import ActionEntry, SessionDetail, SessionSummary
 from app.journal.store import ActionJournal
+from app.knowledge.embeddings import OpenAICompatibleEmbeddingProvider
 from app.knowledge.models import KnowledgeIndexResult, KnowledgeSearchResult
 from app.knowledge.service import KnowledgeService
 from app.knowledge.store import KnowledgeStore
@@ -30,6 +31,12 @@ git = ReadOnlyGit(workspace_registry)
 knowledge_service = KnowledgeService(
     workspace_registry,
     KnowledgeStore(settings.knowledge_index_path),
+    OpenAICompatibleEmbeddingProvider(
+        base_url=settings.local_openai_base_url,
+        model=settings.local_embedding_model,
+        api_key=settings.local_openai_api_key,
+        timeout=settings.request_timeout_seconds,
+    ),
 )
 tool_registry = build_tool_registry(filesystem, git, knowledge_service)
 
@@ -121,8 +128,9 @@ async def search_knowledge(
     workspace: str,
     query: str,
     limit: int = 10,
+    mode: str = "lexical",
 ) -> list[KnowledgeSearchResult]:
-    return knowledge_service.search(workspace, query, limit)
+    return knowledge_service.search(workspace, query, limit, mode)
 
 
 @app.post("/agent/query")
