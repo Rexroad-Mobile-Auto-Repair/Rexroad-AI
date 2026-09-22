@@ -5,6 +5,9 @@ from app.agents.service import AgentService
 from app.config import Settings
 from app.journal.models import ActionEntry, SessionDetail, SessionSummary
 from app.journal.store import ActionJournal
+from app.knowledge.models import KnowledgeIndexResult, KnowledgeSearchResult
+from app.knowledge.service import KnowledgeService
+from app.knowledge.store import KnowledgeStore
 from app.policy.factory import build_workspace_registry
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
@@ -24,7 +27,11 @@ provider_registry = build_provider_registry(settings)
 workspace_registry = build_workspace_registry(settings)
 filesystem = ReadOnlyFilesystem(workspace_registry)
 git = ReadOnlyGit(workspace_registry)
-tool_registry = build_tool_registry(filesystem, git)
+knowledge_service = KnowledgeService(
+    workspace_registry,
+    KnowledgeStore(settings.knowledge_index_path),
+)
+tool_registry = build_tool_registry(filesystem, git, knowledge_service)
 
 action_journal = ActionJournal(
     settings.action_journal_path
@@ -102,6 +109,20 @@ async def journal_session(
     session_id: str,
 ) -> list[ActionEntry]:
     return action_journal.list_session(session_id)
+
+
+@app.post("/knowledge/index/{workspace}")
+async def index_knowledge(workspace: str) -> KnowledgeIndexResult:
+    return knowledge_service.index(workspace)
+
+
+@app.get("/knowledge/search")
+async def search_knowledge(
+    workspace: str,
+    query: str,
+    limit: int = 10,
+) -> list[KnowledgeSearchResult]:
+    return knowledge_service.search(workspace, query, limit)
 
 
 @app.post("/agent/query")

@@ -1,3 +1,4 @@
+from app.knowledge.service import KnowledgeService
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
 from app.tools.registry import ToolDefinition, ToolRegistry
@@ -6,6 +7,7 @@ from app.tools.registry import ToolDefinition, ToolRegistry
 def build_tool_registry(
     filesystem: ReadOnlyFilesystem,
     git: ReadOnlyGit,
+    knowledge: KnowledgeService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
 
@@ -193,5 +195,30 @@ def build_tool_registry(
             },
         )
     )
+
+    if knowledge is not None:
+        registry.register(
+            ToolDefinition(
+                name="knowledge.search",
+                description="Search indexed source code in an approved workspace.",
+                permission="read",
+                handler=knowledge.search,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string"},
+                        "query": {"type": "string"},
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 10,
+                        },
+                    },
+                    "required": ["workspace", "query"],
+                    "additionalProperties": False,
+                },
+            )
+        )
 
     return registry
