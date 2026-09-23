@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -96,3 +97,25 @@ def test_cancelled_workflow_cannot_start_analysis(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="analysis"):
         import asyncio
         asyncio.run(service.start_analysis(item.workflow_id, "s"))
+
+
+def test_temporary_git_workspace_baseline_and_restart(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "target.txt").write_text("before", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "target.txt"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], check=True)
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="repo", workspace="ws", instruction="edit target"))
+    restarted = _service(tmp_path)
+    assert restarted.get(item.workflow_id, "repo") == item
+    assert restarted.git.status("ws") == "## main"
+
+
+def test_preexisting_dirty_target_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "target.txt").write_text("dirty", encoding="utf-8")
+    service = _service(tmp_path, "## main\n M target.txt")
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))
+    item = item.model_copy(update={"status": "awaiting_analysis_review", "analyst_task_id": "task"})
+    service._save(item)
+    with pytest.raises(ValueError, match="dirty"):
+        service.prepare(item.workflow_id, "s", [PatchAction(relative_path="target.txt", expected_text="dirty", replacement="clean")])
