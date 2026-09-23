@@ -13,6 +13,8 @@ def test_chat_page_loads_without_workspace_and_links_operator():
     assert 'href="/operator"' in response.text
     assert "api_key" not in response.text.lower()
     assert "ToolAuthorization" not in response.text
+    assert "session_id.slice" not in response.text
+    assert "/sessions/" in response.text
 
 
 def test_root_operator_and_chat_routes_remain_available():
@@ -32,6 +34,18 @@ def test_agent_query_accepts_optional_workspace_without_client_capability(monkey
     response = TestClient(main.app).post("/agent/query", json={"message": "Hello", "workspace": "acceptance_test"})
     assert response.status_code == 200
     assert response.json()["content"] == "Hi"
+
+
+def test_workspace_free_request_is_not_given_workspace_context(monkeypatch):
+    class FakeAgent:
+        async def query(self, request):
+            assert request.workspace is None
+            return AgentQueryResponse(provider="openai_compatible", model="test", session_id="s2", content="workspace-free")
+
+    monkeypatch.setattr(main, "agent_service", FakeAgent())
+    response = TestClient(main.app).post("/agent/query", json={"message": "hi"})
+    assert response.status_code == 200
+    assert response.json()["content"] == "workspace-free"
 
 
 def test_unknown_chat_workspace_is_rejected(monkeypatch):

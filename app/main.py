@@ -118,6 +118,9 @@ const $=id=>document.getElementById(id),messages=$('messages');let busy=false;fu
 </script></body></html>"""
 CHAT_HTML = CHAT_HTML.replace("safe(x.session_id.slice(0,8))", "safe(x.title)")
 CHAT_HTML = CHAT_HTML.replace("const d=await api('/sessions/'+encodeURIComponent(id));messages.innerHTML='';d.actions.filter(x=>x.tool==='').forEach(x=>add(x.status==='success'?'assistant':'assistant',x.result_preview||x.error||''));", "const events=await api('/sessions/'+encodeURIComponent(id)+'/events');messages.innerHTML='';events.filter(x=>['user_request','final_response'].includes(x.event_type)).forEach(x=>add(x.event_type==='user_request'?'user':'assistant',x.payload.content||''));")
+CHAT_HTML = CHAT_HTML.replace(".side{padding:1rem", ".side{padding:1.25rem 1rem")
+CHAT_HTML = CHAT_HTML.replace(".brand{font-size:1.25rem", ".brand{padding:.25rem 0;font-size:1.25rem")
+CHAT_HTML = CHAT_HTML.replace(".session{padding:.55rem", ".session{padding:.7rem .6rem;line-height:1.3;border-bottom:1px solid #263441")
 
 settings = Settings()
 
