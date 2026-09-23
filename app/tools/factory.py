@@ -1,3 +1,4 @@
+from app.knowledge.cross_workspace import CrossWorkspaceKnowledgeService
 from app.knowledge.service import KnowledgeService
 from app.memory.proposals import ProposalService
 from app.memory.service import MemoryService
@@ -17,6 +18,7 @@ def build_tool_registry(
     proposals: ProposalService | None = None,
     plans: PlanService | None = None,
     database_path: str | None = None,
+    cross_workspace: CrossWorkspaceKnowledgeService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(database_path)
 
@@ -234,6 +236,12 @@ def build_tool_registry(
                 },
             )
         )
+
+    if cross_workspace is not None:
+        registry.register(ToolDefinition(
+            name="knowledge.search_across_workspaces", description="Search an explicit allowlist of approved workspaces.", permission="read", handler=cross_workspace.search_across_workspaces,
+            parameters={"type": "object", "properties": {"workspaces": {"type": "array", "minItems": 1, "items": {"type": "string"}}, "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}, "mode": {"type": "string", "default": "lexical"}}, "required": ["workspaces", "query"], "additionalProperties": False},
+        ))
 
     if memories is not None and proposals is not None:
         memory_tools = MemoryTools(memories, proposals)
