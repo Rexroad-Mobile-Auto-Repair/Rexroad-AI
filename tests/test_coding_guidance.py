@@ -92,3 +92,42 @@ def test_guidance_execute_patches_is_the_only_high_impact_action() -> None:
             def get(self, workflow_id: str, scope: str, action=action) -> CodingJob:
                 return _job(action)
         assert CodingGuidanceService(CurrentJobs()).get("wf", "s").high_impact is False
+
+
+def test_guidance_terminal_failure_and_cancellation_never_offer_retry() -> None:
+    for status in ("failed", "cancelled", "completed"):
+        class Jobs:
+            def get(self, workflow_id: str, scope: str, status=status) -> CodingJob:
+                item = _job("none", status=status)
+                return item.model_copy(
+                    update={
+                        "next_action": CodingJobAction(
+                            action="none", allowed=False, reason="workflow terminal"
+                        )
+                    }
+                )
+
+        guidance = CodingGuidanceService(Jobs()).get("wf", "s")
+        assert guidance is not None
+        assert guidance.next_action == "none"
+        assert guidance.action_available is False
+        assert guidance.confirmation_required is False
+        assert guidance.high_impact is False
+        assert "retry" not in guidance.explanation.casefold()
+
+
+def test_revision_guidance_requires_explicit_note_without_materialization() -> None:
+    class Jobs:
+        def get(self, workflow_id: str, scope: str) -> CodingJob:
+            return CodingJob(
+                job_id="wf", workflow_id="wf", scope="s", workspace="ws", objective="edit",
+                status="proposal_rejected", proposal_id="proposal-1", proposal_revision=1,
+                proposal_status="rejected", next_action=CodingJobAction(action="request_revision", allowed=True, reason="proposal rejected"), observed_at="2025-01-01T00:00:00Z",
+            )
+    guidance = CodingGuidanceService(Jobs()).get("wf", "s")
+    assert guidance is not None
+    assert guidance.next_action == "request_revision"
+    assert guidance.safe_parameters == {"note": "<required bounded revision note>"}
+    assert guidance.will_do == ["dispatch one revision analyst task"]
+    assert any("materialize" in value for value in guidance.will_not_do)
+    assert any("accept" in value for value in guidance.will_not_do)
