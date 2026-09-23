@@ -12,6 +12,7 @@ from app.knowledge.models import KnowledgeIndexResult, KnowledgeSearchResult
 from app.knowledge.service import KnowledgeService
 from app.knowledge.store import KnowledgeStore
 from app.policy.factory import build_workspace_registry
+from app.policy.workspaces import WorkspaceInfo
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
 from app.tools.factory import build_tool_registry
@@ -62,6 +63,11 @@ async def health() -> dict[str, str]:
         "service": "rexroad-ai",
         "version": "0.1.0",
     }
+
+
+@app.get("/workspaces")
+async def workspaces() -> list[WorkspaceInfo]:
+    return workspace_registry.list()
 
 
 @app.get("/system/doctor")

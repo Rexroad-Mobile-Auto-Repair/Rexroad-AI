@@ -1,8 +1,15 @@
 from pathlib import Path
 
+from pydantic import BaseModel
+
 
 class WorkspaceAccessError(PermissionError):
     pass
+
+
+class WorkspaceInfo(BaseModel):
+    name: str
+    available: bool
 
 
 class WorkspaceRegistry:
@@ -14,6 +21,13 @@ class WorkspaceRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._workspaces)
+
+    def list(self) -> list[WorkspaceInfo]:
+        return [self.inspect(name) for name in self.names()]
+
+    def inspect(self, name: str) -> WorkspaceInfo:
+        root = self.get_root(name)
+        return WorkspaceInfo(name=name, available=root.is_dir())
 
     def get_root(self, name: str) -> Path:
         try:
