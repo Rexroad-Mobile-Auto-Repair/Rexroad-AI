@@ -80,7 +80,7 @@ class ToolRegistry:
         tool = self.get(authorization.tool)
         if not self.validate_authorization(authorization, tool.name, authorization.scope, authorization.session_id):
             raise ValueError("invalid tool authorization")
-        fingerprint = hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+        fingerprint = self.arguments_fingerprint(arguments)
         approval = ToolApproval(str(uuid4()), authorization.token, tool.name, authorization.scope, authorization.session_id, fingerprint)
         self._approvals[approval.token] = approval
         return approval
@@ -88,7 +88,7 @@ class ToolRegistry:
     def consume_approval(self, approval: ToolApproval, authorization: ToolAuthorization, name: str, scope: str, session_id: str | None, arguments: dict[str, Any]) -> bool:
         if not self.get(name).high_impact:
             return True
-        fingerprint = hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+        fingerprint = self.arguments_fingerprint(arguments)
         valid = self._approvals.get(approval.token) == approval and approval.authorization_token == authorization.token and approval.tool == name and approval.scope == scope and approval.session_id == session_id and approval.arguments_fingerprint == fingerprint
         if valid:
             del self._approvals[approval.token]
@@ -98,11 +98,31 @@ class ToolRegistry:
         tool = self.get(authorization.tool)
         if not tool.high_impact or not self.validate_authorization(authorization, tool.name, authorization.scope, authorization.session_id):
             raise ValueError("approval request not allowed")
-        fingerprint = hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+        fingerprint = self.arguments_fingerprint(arguments)
         request = ToolApprovalRequest(str(uuid4()), tool.name, authorization.scope, authorization.session_id, fingerprint, summary[:500], "pending")
         self._approval_requests[request.id] = (request, None)
         self._persist_request(request)
         return request
+
+    @staticmethod
+    def arguments_fingerprint(arguments: dict[str, Any]) -> str:
+        return hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+
+    def find_approval_request(self, *, tool: str, scope: str, session_id: str | None, arguments: dict[str, Any]) -> ToolApprovalRequest | None:
+        """Return the newest matching persisted/in-process request without changing state."""
+        fingerprint = self.arguments_fingerprint(arguments)
+        candidates: list[ToolApprovalRequest] = []
+        for request, _ in self._approval_requests.values():
+            if request.tool == tool and request.scope == scope and request.session_id == session_id and request.arguments_fingerprint == fingerprint:
+                candidates.append(request)
+        if self._database_path is not None:
+            with sqlite3.connect(self._database_path) as connection:
+                rows = connection.execute(
+                    "SELECT id, tool, scope, session_id, arguments_fingerprint, summary, status FROM tool_approval_requests WHERE tool=? AND scope=? AND session_id IS ? AND arguments_fingerprint=? ORDER BY updated_at DESC, id DESC",
+                    (tool, scope, session_id, fingerprint),
+                ).fetchall()
+            candidates.extend(ToolApprovalRequest(*row) for row in rows if not any(item.id == row[0] for item in candidates))
+        return candidates[0] if candidates else None
 
     def review_approval(self, request_id: str, scope: str, approve: bool) -> ToolApprovalRequest:
         current = self._approval_requests.get(request_id)
@@ -148,7 +168,7 @@ class ToolRegistry:
     def issue_approved_request(self, request_id: str, scope: str, authorization: ToolAuthorization, arguments: dict[str, Any], session_id: str | None) -> ToolApproval:
         request = self.get_approval_request(request_id, scope)
         tool = self.get(request.tool)
-        fingerprint = hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+        fingerprint = self.arguments_fingerprint(arguments)
         if request.status != "approved" or not tool.high_impact or request.scope != scope or request.session_id != session_id or request.arguments_fingerprint != fingerprint or not self.validate_authorization(authorization, request.tool, scope, session_id):
             raise ValueError("approval request is not valid")
         consumed = ToolApproval(str(uuid4()), authorization.token, request.tool, scope, session_id, fingerprint)

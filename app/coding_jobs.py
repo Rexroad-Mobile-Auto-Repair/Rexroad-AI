@@ -27,6 +27,14 @@ class CodingJobSpec(BaseModel):
     check_id: str | None = None
     trace_id: str | None = None
     approval_status: str | None = None
+    approval_request_id: str | None = None
+    execution_status: str = "not_attempted"
+    changed: bool | None = None
+    result_summary: dict[str, Any] | None = None
+    passed: bool | None = None
+    exit_code: int | None = None
+    timed_out: bool | None = None
+    failure_reason: str | None = None
 
 
 class CodingJob(BaseModel):
@@ -45,6 +53,7 @@ class CodingJob(BaseModel):
     check_specs: list[CodingJobSpec] = Field(default_factory=list)
     execution_trace_ids: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
+    blocked_reason: str | None = None
     verifier_task_id: str | None = None
     verifier_review_status: str | None = None
     outcome: str | None = None
@@ -68,8 +77,9 @@ class CodingJobService:
         check_specs = [self._spec_summary(sid, scope, "check", proposal) for sid in (proposal.check_spec_ids if proposal else [])]
         traces = [*workflow.mutation_trace_ids, *workflow.check_trace_ids]
         status, action = self._derive(workflow, proposal, patch_specs, check_specs)
-        changed = sorted({str(self.traces.get(t, scope).result_preview) for t in workflow.mutation_trace_ids if self.traces.get(t, scope) and self.traces.get(t, scope).status == "success" and self.traces.get(t, scope).tool == "filesystem.apply_patch"})
-        return CodingJob(job_id=workflow.workflow_id, workflow_id=workflow.workflow_id, scope=scope, workspace=workflow.workspace, objective=workflow.instruction, status=status, proposal_id=proposal.proposal_id if proposal else None, proposal_revision=proposal.revision_number if proposal else None, proposal_status=proposal.status if proposal else None, proposal_preview_available=proposal is not None, conversion_status=proposal.conversion_status if proposal else None, patch_specs=patch_specs, check_specs=check_specs, execution_trace_ids=traces, changed_files=changed, verifier_task_id=workflow.verifier_task_id, verifier_review_status=workflow.verifier_review_status, outcome=workflow.outcome, next_action=action, parent_session_id=workflow.parent_session_id, parent_plan_id=workflow.parent_plan_id, parent_step_id=workflow.parent_step_id, observed_at=datetime.now(UTC))
+        changed = sorted({item.relative_path for item in patch_specs if item.changed is True and item.relative_path})
+        blocked = self._blocked_reason(workflow, proposal, patch_specs, check_specs)
+        return CodingJob(job_id=workflow.workflow_id, workflow_id=workflow.workflow_id, scope=scope, workspace=workflow.workspace, objective=workflow.instruction, status=status, proposal_id=proposal.proposal_id if proposal else None, proposal_revision=proposal.revision_number if proposal else None, proposal_status=proposal.status if proposal else None, proposal_preview_available=proposal is not None, conversion_status=proposal.conversion_status if proposal else None, patch_specs=patch_specs, check_specs=check_specs, execution_trace_ids=traces, changed_files=changed, blocked_reason=blocked, verifier_task_id=workflow.verifier_task_id, verifier_review_status=workflow.verifier_review_status, outcome=workflow.outcome, next_action=action, parent_session_id=workflow.parent_session_id, parent_plan_id=workflow.parent_plan_id, parent_step_id=workflow.parent_step_id, observed_at=datetime.now(UTC))
 
     def _latest_proposal(self, workflow_id: str, scope: str):
         history = self.proposals.history(workflow_id, scope, 5)
@@ -89,7 +99,55 @@ class CodingJobService:
             workflow_trace = getattr(self.workflows.get(proposal.workflow_id, scope), "mutation_trace_ids", []) if proposal else []
         else:
             workflow_trace = getattr(self.workflows.get(proposal.workflow_id, scope), "check_trace_ids", []) if proposal else []
-        return CodingJobSpec(spec_id=spec_id, tool=spec.tool_name if spec else "", status=spec.status if spec else "unknown", relative_path=args.get("relative_path") if kind == "patch" else None, check_id=args.get("check_id") if kind == "check" else None, trace_id=workflow_trace[index] if index >= 0 and index < len(workflow_trace) else None)
+        trace_id = workflow_trace[index] if index >= 0 and index < len(workflow_trace) else None
+        trace = self.traces.get(trace_id, scope) if trace_id else None
+        execution_status = "succeeded" if trace and trace.status == "success" else ("failed" if trace else "not_attempted")
+        summary: dict[str, Any] | None = None
+        changed: bool | None = None
+        passed: bool | None = None
+        exit_code: int | None = None
+        timed_out: bool | None = None
+        failure_reason = trace.verification_reason if trace and trace.status != "success" else None
+        if trace and trace.result_preview:
+            import ast
+            try:
+                parsed = ast.literal_eval(trace.result_preview)
+                if isinstance(parsed, dict):
+                    summary = {key: parsed[key] for key in ("relative_path", "before_hash", "after_hash", "bytes_changed", "check_id", "status", "targets") if key in parsed}
+                    changed = parsed.get("changed") if kind == "patch" else None
+                    passed = parsed.get("passed") if kind == "check" else None
+                    exit_code = parsed.get("exit_code") if kind == "check" else None
+                    timed_out = parsed.get("timed_out") if kind == "check" else None
+            except (ValueError, SyntaxError):
+                pass
+        approval_status = None
+        approval_request_id = None
+        if spec and kind == "patch":
+            request = self.tools.find_approval_request(tool=spec.tool_name, scope=scope, session_id=spec.session_id, arguments=spec.arguments)
+            approval_status = request.status if request else "not_requested"
+            approval_request_id = request.id if request else None
+        return CodingJobSpec(spec_id=spec_id, tool=spec.tool_name if spec else "", status=spec.status if spec else "unknown", relative_path=args.get("relative_path") if kind == "patch" else None, check_id=args.get("check_id") if kind == "check" else None, trace_id=trace_id, approval_status=approval_status, approval_request_id=approval_request_id, execution_status=execution_status, changed=changed, result_summary=summary, passed=passed, exit_code=exit_code, timed_out=timed_out, failure_reason=failure_reason)
+
+    def _blocked_reason(self, workflow, proposal, patches, checks) -> str | None:
+        if workflow.status in {"completed", "failed", "cancelled"}:
+            return "workflow terminal"
+        if workflow.status == "awaiting_analysis_review":
+            return "analysis review pending"
+        if proposal and proposal.status == "rejected":
+            return "proposal rejected"
+        if proposal and proposal.spec_review_status != "accepted":
+            return "spec review pending"
+        if any(item.approval_status == "rejected" for item in patches):
+            return "approval rejected"
+        if any(item.approval_status in {"not_requested", "pending"} for item in patches):
+            return "approval pending"
+        if any(item.execution_status == "failed" for item in patches + checks):
+            return "execution failed"
+        if any(item.execution_status == "failed" or item.passed is False for item in checks):
+            return "check failed"
+        if workflow.status == "awaiting_verifier_review":
+            return "verifier review pending"
+        return None
 
     def _derive(self, workflow, proposal, patches, checks):
         if workflow.status in {"completed", "failed", "cancelled"}:
@@ -110,9 +168,18 @@ class CodingJobService:
             return "awaiting_spec_review", CodingJobAction(action="review_specs", allowed=True, reason="generated specs require review")
         if any(item.status in {"draft", "invalidated"} for item in patches):
             return "awaiting_patch_approval", CodingJobAction(action="request_patch_approval", allowed=True, reason="patch specs are not ready")
+        if any(item.approval_status == "rejected" for item in patches):
+            return "awaiting_patch_approval", CodingJobAction(action="request_patch_approval", allowed=False, reason="a patch approval was rejected")
+        if any(item.approval_status in {"not_requested", "pending"} for item in patches):
+            pending = any(item.approval_status == "pending" for item in patches)
+            return "awaiting_patch_approval", CodingJobAction(action="request_patch_approval", allowed=not pending, reason="patch approval is pending" if pending else "patch approval is required")
         if workflow.status in {"implementation_ready", "implementing"}:
             return "ready_to_execute_patches", CodingJobAction(action="execute_patches", allowed=True, reason="approved patch execution is available")
         if workflow.status == "awaiting_checks":
+            if any(item.execution_status == "failed" or item.passed is False for item in checks):
+                return "checks_failed", CodingJobAction(action="none", allowed=False, reason="a check failed")
+            if checks and all(item.execution_status == "succeeded" and item.passed is True for item in checks):
+                return "awaiting_verification", CodingJobAction(action="start_verifier", allowed=True, reason="checks succeeded")
             return workflow.status, CodingJobAction(action="execute_checks", allowed=True, reason="checks are ready")
         if workflow.status == "awaiting_verification":
             return "awaiting_verifier", CodingJobAction(action="start_verifier", allowed=True, reason="checks succeeded")

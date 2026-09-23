@@ -9,7 +9,7 @@ from app.coding_workflows import CodingWorkflowCreate
 from app.plans.specs import ExecutionSpecService
 from app.plans.traces import ExecutionTraceService
 from app.policy.workspaces import WorkspaceRegistry
-from app.tools.registry import ToolRegistry
+from app.tools.registry import ToolDefinition, ToolRegistry
 from tests.test_coding_workflows import _service
 
 
@@ -38,3 +38,16 @@ def test_job_api_is_scoped_and_read_only(monkeypatch, tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["next_action"]["action"] == "start_analysis"
     assert client.get(f"/supervisor-coding-workflows/{workflow.workflow_id}/job", params={"scope": "other"}).status_code == 404
+
+
+def test_approval_lookup_is_read_only_and_bound_to_all_arguments(tmp_path: Path) -> None:
+    registry = ToolRegistry(tmp_path / "state.db")
+    registry.register(ToolDefinition("filesystem.apply_patch", "patch", "filesystem_write", lambda **_: {}, high_impact=True))
+    authorization = registry.authorize("filesystem.apply_patch", "scope", "session")
+    arguments = {"workspace": "ws", "relative_path": "app/main.py", "expected_text": "old", "replacement": "new"}
+    request = registry.request_approval(authorization, arguments, "safe patch")
+    assert registry.find_approval_request(tool="filesystem.apply_patch", scope="scope", session_id="session", arguments=arguments).status == "pending"
+    assert registry.find_approval_request(tool="filesystem.apply_patch", scope="other", session_id="session", arguments=arguments) is None
+    altered = {**arguments, "replacement": "different"}
+    assert registry.find_approval_request(tool="filesystem.apply_patch", scope="scope", session_id="session", arguments=altered) is None
+    assert registry.get_approval_request(request.id, "scope").status == "pending"
