@@ -19,10 +19,15 @@ async def test_research_verify_workflow_requires_explicit_review(tmp_path):
     review = agents.review(started.workflow.researcher_task_id or "", "s", "accepted", "supervisor")
     assert review.status == "accepted"
     verified = await workflows.start_verification(workflow.workflow_id, "s")
-    assert verified.workflow.status == "completed"
+    assert verified.workflow.status == "awaiting_verifier_review"
     assert verified.verifier is not None
     assert verified.verifier.worker_profile == "verifier"
     assert verified.workflow.verifier_dispatch_id
+    assert workflows.get(workflow.workflow_id, "other") is None
+    final = workflows.review_verifier(workflow.workflow_id, "s", "accepted", "supervisor")
+    assert final.workflow.status == "completed"
+    assert final.final_outcome == "verified"
+    assert workflows.result(final.workflow).final_outcome == "verified"
     assert verified.workflow.parent_session_id == "parent"
     assert verified.workflow.plan_id == "plan"
     assert verified.workflow.step_id == "step"

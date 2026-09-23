@@ -476,6 +476,30 @@ async def cancel_research_verify_workflow(workflow_id: str, scope: str, reason: 
         raise HTTPException(status_code=404, detail="Workflow cancellation unavailable") from exc
 
 
+@app.get("/supervisor-workflows/{workflow_id}/result", response_model=ResearchVerifyWorkflowResult)
+async def get_research_verify_result(workflow_id: str, scope: str) -> ResearchVerifyWorkflowResult:
+    workflow = supervisor_workflow_service.get(workflow_id, scope)
+    if workflow is None or workflow.final_outcome not in {"verified", "rejected"}:
+        raise HTTPException(status_code=404, detail="Workflow result unavailable")
+    return supervisor_workflow_service.result(workflow)
+
+
+@app.post("/supervisor-workflows/{workflow_id}/accept-verifier", response_model=ResearchVerifyWorkflowResult)
+async def accept_verifier_result(workflow_id: str, scope: str, reviewer_session_id: str | None = None, note: str | None = None) -> ResearchVerifyWorkflowResult:
+    try:
+        return supervisor_workflow_service.review_verifier(workflow_id, scope, "accepted", reviewer_session_id, note)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Verifier review unavailable") from exc
+
+
+@app.post("/supervisor-workflows/{workflow_id}/reject-verifier", response_model=ResearchVerifyWorkflowResult)
+async def reject_verifier_result(workflow_id: str, scope: str, reviewer_session_id: str | None = None, note: str | None = None) -> ResearchVerifyWorkflowResult:
+    try:
+        return supervisor_workflow_service.review_verifier(workflow_id, scope, "rejected", reviewer_session_id, note)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Verifier review unavailable") from exc
+
+
 @app.get("/supervisor-dispatches", response_model=list[SupervisorDispatchAudit])
 async def list_supervisor_dispatches(scope: str, limit: int = 20) -> list[SupervisorDispatchAudit]:
     return sub_agent_service.audits(scope, limit)
