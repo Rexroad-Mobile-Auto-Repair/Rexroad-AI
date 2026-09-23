@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.providers.models import ModelMessage, ModelRequest
 from app.providers.registry import ProviderRegistry
+from app.supervisor_policy import SupervisorPolicy, SupervisorRecommendationRequest
 from app.tools.output_policy import sanitize_output
 from app.tools.registry import ToolRegistry
 
@@ -96,11 +99,30 @@ class SubAgentIncorporation(BaseModel):
     created_at: datetime
 
 
+class DispatchAuthorization:
+    def __init__(self, profile: str, scope: str, workspace: str | None, session: str | None, fingerprint: str) -> None:
+        self.token = str(uuid4())
+        self.profile, self.scope, self.workspace, self.session, self.fingerprint = profile, scope, workspace, session, fingerprint
+
+
+class SupervisorDispatchRequest(BaseModel):
+    worker_profile: str
+    scope: str
+    instruction: str = Field(min_length=1, max_length=4000)
+    workspace: str | None = None
+    allowed_tools: list[str] = Field(default_factory=list, max_length=10)
+    parent_session_id: str | None = None
+    plan_id: str | None = None
+    step_id: str | None = None
+
+
 class SubAgentService:
     MAX_TOOL_CALLS = 3
 
     def __init__(self, database_path: str | Path, providers: ProviderRegistry | None = None, tools: ToolRegistry | None = None) -> None:
         self._path, self._providers, self._tools = Path(database_path), providers, tools
+        self._dispatch_auth: dict[str, DispatchAuthorization] = {}
+        self._policy = SupervisorPolicy()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self._path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS sub_agent_tasks (task_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT, created_at TEXT NOT NULL)")
@@ -115,6 +137,24 @@ class SubAgentService:
         with sqlite3.connect(self._path) as db:
             db.execute("INSERT INTO sub_agent_tasks VALUES (?, ?, NULL, ?)", (task.task_id, task.model_dump_json(), now.isoformat()))
         return task
+
+    def authorize_dispatch(self, request: SupervisorDispatchRequest) -> DispatchAuthorization:
+        recommendation = self._policy.recommend(SupervisorRecommendationRequest(instruction=request.instruction, scope=request.scope, workspace=request.workspace))
+        if recommendation.action != "delegate" or recommendation.profile != request.worker_profile:
+            raise ValueError("profile does not match recommendation")
+        fingerprint = hashlib.sha256(json.dumps(request.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        capability = DispatchAuthorization(request.worker_profile, request.scope, request.workspace, request.parent_session_id, fingerprint)
+        self._dispatch_auth[capability.token] = capability
+        return capability
+
+    async def dispatch(self, request: SupervisorDispatchRequest, authorization: DispatchAuthorization) -> SubAgentResult:
+        expected = self._dispatch_auth.get(authorization.token)
+        fingerprint = hashlib.sha256(json.dumps(request.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if expected is not authorization or expected.profile != request.worker_profile or expected.scope != request.scope or expected.workspace != request.workspace or expected.session != request.parent_session_id or expected.fingerprint != fingerprint:
+            raise ValueError("dispatch authorization denied")
+        del self._dispatch_auth[authorization.token]
+        task = self.create(SubAgentTaskCreate(**request.model_dump()))
+        return await self.run(task.task_id)
 
     def get(self, task_id: str) -> tuple[SubAgentTask, SubAgentResult | None] | None:
         with sqlite3.connect(self._path) as db:

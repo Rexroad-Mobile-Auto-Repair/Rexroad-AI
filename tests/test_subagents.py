@@ -1,6 +1,6 @@
 import pytest
 
-from app.subagents import PROFILES, SubAgentService, SubAgentTaskCreate
+from app.subagents import PROFILES, SubAgentService, SubAgentTaskCreate, SupervisorDispatchRequest
 from app.tools.registry import ToolDefinition, ToolRegistry
 
 
@@ -81,3 +81,25 @@ def test_worker_uses_only_read_profile_tools(tmp_path):
     task = service.create(SubAgentTaskCreate(worker_profile="researcher", scope="s", instruction="read", allowed_tools=["knowledge.search"]))
     assert service.use_tool(task.task_id, "knowledge.search", {}) == {"token": "[redacted]", "ok": 1}
     assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_requires_matching_one_time_authorization(tmp_path):
+    service = SubAgentService(tmp_path / "state.sqlite3")
+    request = SupervisorDispatchRequest(worker_profile="researcher", scope="s", instruction="research this", parent_session_id="parent")
+    authorization = service.authorize_dispatch(request)
+    result = await service.dispatch(request, authorization)
+    assert result.status == "completed"
+    with pytest.raises(ValueError):
+        await service.dispatch(request, authorization)
+
+
+def test_dispatch_rejects_wrong_profile_scope_and_instruction(tmp_path):
+    service = SubAgentService(tmp_path / "state.sqlite3")
+    request = SupervisorDispatchRequest(worker_profile="researcher", scope="s", instruction="research this")
+    with pytest.raises(ValueError):
+        service.authorize_dispatch(request.model_copy(update={"worker_profile": "verifier"}))
+    authorization = service.authorize_dispatch(request)
+    with pytest.raises(ValueError):
+        import asyncio
+        asyncio.run(service.dispatch(request.model_copy(update={"scope": "other"}), authorization))

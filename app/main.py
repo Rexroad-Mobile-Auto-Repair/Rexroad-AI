@@ -39,10 +39,12 @@ from app.providers.status import ProviderStatus
 from app.subagents import (
     SubAgentContribution,
     SubAgentIncorporation,
+    SubAgentResult,
     SubAgentReview,
     SubAgentService,
     SubAgentTask,
     SubAgentTaskCreate,
+    SupervisorDispatchRequest,
 )
 from app.supervisor_policy import (
     SupervisorPolicy,
@@ -409,6 +411,15 @@ async def create_sub_agent_task(request: SubAgentTaskCreate) -> SubAgentTask:
 @app.post("/supervisor/recommend-worker", response_model=SupervisorRecommendation)
 async def recommend_worker(request: SupervisorRecommendationRequest) -> SupervisorRecommendation:
     return supervisor_policy.recommend(request)
+
+
+@app.post("/supervisor/dispatch", response_model=SubAgentResult)
+async def supervisor_dispatch(request: SupervisorDispatchRequest) -> SubAgentResult:
+    try:
+        authorization = sub_agent_service.authorize_dispatch(request)
+        return await sub_agent_service.dispatch(request, authorization)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Dispatch authorization denied") from exc
 
 
 @app.get("/sub-agent-tasks/{task_id}")
