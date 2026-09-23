@@ -794,3 +794,11 @@ async def reject_coding_proposal(workflow_id: str, scope: str, reviewer_session_
     except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal review unavailable") from exc
 
 
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal/convert", response_model=CodingProposal)
+async def convert_coding_proposal(workflow_id: str, scope: str, workspace: str) -> CodingProposal:
+    item = coding_proposal_service.get(workflow_id, scope)
+    if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
+    try: return coding_proposal_service.convert(item.proposal_id, scope, workspace)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal conversion unavailable") from exc
+
+

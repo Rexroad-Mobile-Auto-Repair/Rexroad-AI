@@ -10,6 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from app.coding_workflows import CodingWorkflowService
+from app.plans.models import PlanCreate, PlanStepCreate
 from app.policy.workspaces import WorkspaceRegistry
 from app.tools.git import ReadOnlyGit
 
@@ -49,6 +50,10 @@ class CodingProposal(BaseModel):
     target_hashes: dict[str, str]
     created_at: datetime
     updated_at: datetime
+    patch_spec_ids: list[str] = Field(default_factory=list)
+    check_spec_ids: list[str] = Field(default_factory=list)
+    conversion_status: str | None = None
+    converted_at: datetime | None = None
 
 
 class CodingProposalService:
@@ -85,6 +90,33 @@ class CodingProposalService:
         now = datetime.now(UTC)
         proposal = CodingProposal(proposal_id=str(uuid4()), workflow_id=workflow_id, analyst_task_id=workflow.analyst_task_id, scope=scope, workspace=workflow.workspace, objective=workflow.instruction, status="ready_for_review", changes=request.changes, checks=request.checks, summary=request.summary, baseline_head=self.git.show(workflow.workspace, "HEAD")[:80], target_hashes=hashes, created_at=now, updated_at=now)
         self._save(proposal); return proposal
+
+    def convert(self, proposal_id: str, scope: str, workspace: str) -> CodingProposal:
+        proposal = self.get(proposal_id, scope)
+        if proposal is None or proposal.workspace != workspace: raise ValueError("proposal not found")
+        if proposal.status != "accepted": raise ValueError("accepted proposal required")
+        if proposal.conversion_status == "converted": return proposal
+        self.workspaces.get_root(workspace)
+        status = self.git.status(workspace)
+        dirty = {line[3:].strip().split(" -> ")[-1] for line in status.splitlines() if line and not line.startswith("##")}
+        for change in proposal.changes:
+            if change.relative_path in dirty: raise ValueError("target is pre-existing dirty")
+            path = self.workspaces.resolve_path(workspace, change.relative_path)
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != proposal.target_hashes.get(change.relative_path): raise ValueError("proposal is stale")
+            if change.expected_text not in path.read_text(encoding="utf-8", errors="replace"): raise ValueError("expected text no longer matches")
+        for check in proposal.checks:
+            if check.check_id not in self.ALLOWED_CHECKS: raise ValueError("unsupported check")
+        steps = [PlanStepCreate(title=f"Apply {c.relative_path}", metadata={"proposal_id": proposal_id}) for c in proposal.changes] + [PlanStepCreate(title=f"Run {c.check_id}", metadata={"proposal_id": proposal_id}) for c in proposal.checks]
+        plan = self.workflows.plans.create(PlanCreate(scope=scope, workspace=workspace, goal=proposal.objective, steps=steps))
+        patch_ids: list[str] = []; check_ids: list[str] = []
+        for step, change in zip(plan.steps, proposal.changes):
+            spec = self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="filesystem.apply_patch", arguments={"workspace": workspace, "relative_path": change.relative_path, "expected_text": change.expected_text, "replacement": change.replacement}, verification={"type": "result_present"})
+            patch_ids.append(spec.id)
+        for step, check in zip(plan.steps[len(proposal.changes):], proposal.checks):
+            spec = self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True})
+            check_ids.append(spec.id)
+        updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids, "conversion_status": "converted", "converted_at": datetime.now(UTC), "updated_at": datetime.now(UTC)})
+        self._save(updated); return updated
 
     def get(self, proposal_id: str, scope: str) -> CodingProposal | None:
         with sqlite3.connect(self.path) as db: row = db.execute("SELECT payload_json FROM coding_proposals WHERE proposal_id=?", (proposal_id,)).fetchone()
