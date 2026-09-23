@@ -104,6 +104,15 @@ class CodingWorkflowService:
         if not row: return None
         item = CodingWorkflow.model_validate_json(row[0]); return item if item.scope == scope else None
 
+    def list(self, scope: str, workspace: str | None = None, limit: int = 20) -> list[CodingWorkflow]:
+        if not scope.strip() or limit < 1 or limit > 100:
+            raise ValueError("invalid coding workflow query")
+        with sqlite3.connect(self.path) as db:
+            rows = db.execute("SELECT payload_json FROM coding_workflows ORDER BY rowid DESC LIMIT ?", (limit * 3,)).fetchall()
+        items = [CodingWorkflow.model_validate_json(row[0]) for row in rows]
+        items = [item for item in items if item.scope == scope and (workspace is None or item.workspace == workspace)]
+        return sorted(items, key=lambda item: (item.updated_at, item.workflow_id), reverse=True)[:limit]
+
     async def start_analysis(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_analysis": raise ValueError("analysis cannot start")

@@ -165,6 +165,26 @@ class ToolRegistry:
             return current[0]
         return self._load_request(request_id, scope)
 
+    def list_approval_requests(self, scope: str, limit: int = 20, status: str | None = None) -> list[ToolApprovalRequest]:
+        if not scope.strip() or limit < 1 or limit > 100:
+            raise ValueError("invalid approval query")
+        items: dict[str, ToolApprovalRequest] = {}
+        for request, _ in self._approval_requests.values():
+            if request.scope == scope and (status is None or request.status == status):
+                items[request.id] = request
+        if self._database_path is not None:
+            query = "SELECT id, tool, scope, session_id, arguments_fingerprint, summary, status FROM tool_approval_requests WHERE scope=?"
+            params: list[Any] = [scope]
+            if status is not None:
+                query += " AND status=?"
+                params.append(status)
+            query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
+            params.append(limit)
+            with sqlite3.connect(self._database_path) as connection:
+                for row in connection.execute(query, params).fetchall():
+                    items.setdefault(row[0], ToolApprovalRequest(*row))
+        return sorted(items.values(), key=lambda item: item.id, reverse=True)[:limit]
+
     def issue_approved_request(self, request_id: str, scope: str, authorization: ToolAuthorization, arguments: dict[str, Any], session_id: str | None) -> ToolApproval:
         request = self.get_approval_request(request_id, scope)
         tool = self.get(request.tool)

@@ -62,6 +62,7 @@ from app.subagents import (
     SupervisorDispatchAudit,
     SupervisorDispatchRequest,
 )
+from app.supervisor_dashboard import SupervisorDashboardService, SupervisorProjectDashboard
 from app.supervisor_policy import (
     SupervisorPolicy,
     SupervisorRecommendation,
@@ -132,6 +133,7 @@ coding_action_service = SupervisorCodingActionService(coding_job_service, coding
 coding_guidance_service = CodingGuidanceService(coding_job_service)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 supervisor_policy = SupervisorPolicy()
+supervisor_dashboard_service = SupervisorDashboardService(workspace_registry, project_state_service, coding_workflow_service, coding_job_service, coding_guidance_service, supervisor_workflow_service, plan_service, execution_trace_service, tool_registry)
 
 agent_service = AgentService(
     settings,
@@ -149,6 +151,14 @@ async def health() -> dict[str, str]:
         "service": "rexroad-ai",
         "version": "0.1.0",
     }
+
+
+@app.get("/supervisor/dashboard", response_model=SupervisorProjectDashboard)
+async def supervisor_dashboard(scope: str, workspace: str, activity_limit: int = 50) -> SupervisorProjectDashboard:
+    try:
+        return supervisor_dashboard_service.get(scope, workspace, activity_limit=activity_limit)
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=404, detail="Dashboard unavailable") from None
 
 
 @app.get("/workspaces")
