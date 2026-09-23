@@ -12,7 +12,9 @@ from app.tools.registry import ToolApproval, ToolAuthorization, ToolRegistry
 
 
 class PlanExecutionError(RuntimeError):
-    pass
+    def __init__(self, message: str, trace_id: str | None = None) -> None:
+        super().__init__(message)
+        self.trace_id = trace_id
 
 
 class PlanExecutionCoordinator:
@@ -34,6 +36,7 @@ class PlanExecutionCoordinator:
         verify: Callable[[Any], bool] | None = None,
         verification_policy: VerificationPolicy | None = None,
         session_id: str | None = None,
+        trace_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         plan = self._plans.get(plan_id, scope)
         if plan is None:
@@ -76,17 +79,20 @@ class PlanExecutionCoordinator:
                 verification_reason = "callable_passed"
         except Exception as exc:
             if self._journal is not None and session_id is not None:
+                journal_arguments = {"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason, **(trace_metadata or {})}
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
-                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason},
+                                     permission=tool.permission, arguments=journal_arguments,
                                      status="error", error="verification failed" if isinstance(exc, PlanExecutionError) else "tool execution failed")
             self._plans.transition(plan_id, step_id, "failed", scope, trace_id)
             if isinstance(exc, PlanExecutionError):
+                exc.trace_id = trace_id
                 raise
-            raise PlanExecutionError("tool execution failed") from exc
+            raise PlanExecutionError("tool execution failed", trace_id=trace_id) from exc
         try:
             if self._journal is not None and session_id is not None:
+                journal_arguments = {"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason, **(trace_metadata or {})}
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
-                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason},
+                                     permission=tool.permission, arguments=journal_arguments,
                                      status="success", result_preview=str(sanitize_output(result))[:1000])
             self._plans.transition(plan_id, step_id, "completed", scope, trace_id)
             if self._on_success is not None:

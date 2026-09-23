@@ -35,6 +35,8 @@ class CodingJobSpec(BaseModel):
     exit_code: int | None = None
     timed_out: bool | None = None
     failure_reason: str | None = None
+    attempt_count: int = 0
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CodingJob(BaseModel):
@@ -95,11 +97,18 @@ class CodingJobService:
             trace_ids = proposal.patch_spec_ids if kind == "patch" else proposal.check_spec_ids
         index = trace_ids.index(spec_id) if spec_id in trace_ids else -1
         workflow_trace = []
-        if kind == "patch":
-            workflow_trace = getattr(self.workflows.get(proposal.workflow_id, scope), "mutation_trace_ids", []) if proposal else []
-        else:
-            workflow_trace = getattr(self.workflows.get(proposal.workflow_id, scope), "check_trace_ids", []) if proposal else []
+        workflow_item = self.workflows.get(proposal.workflow_id, scope) if proposal else None
+        explicit_attempts = [attempt for attempt in getattr(workflow_item, "execution_attempts", []) if attempt.spec_id == spec_id and attempt.kind == kind]
+        if not explicit_attempts:
+            if kind == "patch":
+                workflow_trace = getattr(workflow_item, "mutation_trace_ids", []) if workflow_item else []
+            else:
+                workflow_trace = getattr(workflow_item, "check_trace_ids", []) if workflow_item else []
         trace_id = workflow_trace[index] if index >= 0 and index < len(workflow_trace) else None
+        if explicit_attempts:
+            explicit_attempts = sorted(explicit_attempts, key=lambda attempt: (attempt.sequence, attempt.created_at, attempt.attempt_id))[:10]
+            latest = explicit_attempts[-1]
+            trace_id = latest.trace_id
         trace = self.traces.get(trace_id, scope) if trace_id else None
         execution_status = "succeeded" if trace and trace.status == "success" else ("failed" if trace else "not_attempted")
         summary: dict[str, Any] | None = None
@@ -120,13 +129,31 @@ class CodingJobService:
                     timed_out = parsed.get("timed_out") if kind == "check" else None
             except (ValueError, SyntaxError):
                 pass
+        if kind == "patch" and explicit_attempts:
+            for attempt in explicit_attempts:
+                if attempt.status != "succeeded" or not attempt.trace_id:
+                    continue
+                historical = self.traces.get(attempt.trace_id, scope)
+                if historical and historical.result_preview:
+                    import ast
+                    try:
+                        parsed_historical = ast.literal_eval(historical.result_preview)
+                        if isinstance(parsed_historical, dict) and parsed_historical.get("changed") is True:
+                            changed = True
+                            break
+                    except (ValueError, SyntaxError):
+                        continue
         approval_status = None
         approval_request_id = None
         if spec and kind == "patch":
             request = self.tools.find_approval_request(tool=spec.tool_name, scope=scope, session_id=spec.session_id, arguments=spec.arguments)
             approval_status = request.status if request else "not_requested"
             approval_request_id = request.id if request else None
-        return CodingJobSpec(spec_id=spec_id, tool=spec.tool_name if spec else "", status=spec.status if spec else "unknown", relative_path=args.get("relative_path") if kind == "patch" else None, check_id=args.get("check_id") if kind == "check" else None, trace_id=trace_id, approval_status=approval_status, approval_request_id=approval_request_id, execution_status=execution_status, changed=changed, result_summary=summary, passed=passed, exit_code=exit_code, timed_out=timed_out, failure_reason=failure_reason)
+        attempt_summaries = [{"sequence": attempt.sequence, "status": attempt.status, "trace_id": attempt.trace_id, "created_at": attempt.created_at} for attempt in explicit_attempts]
+        if explicit_attempts:
+            latest_status = explicit_attempts[-1].status
+            execution_status = "succeeded" if latest_status == "succeeded" else ("failed" if latest_status == "failed" else "not_attempted")
+        return CodingJobSpec(spec_id=spec_id, tool=spec.tool_name if spec else "", status=spec.status if spec else "unknown", relative_path=args.get("relative_path") if kind == "patch" else None, check_id=args.get("check_id") if kind == "check" else None, trace_id=trace_id, approval_status=approval_status, approval_request_id=approval_request_id, execution_status=execution_status, changed=changed, result_summary=summary, passed=passed, exit_code=exit_code, timed_out=timed_out, failure_reason=failure_reason, attempt_count=len(explicit_attempts), attempts=attempt_summaries)
 
     def _blocked_reason(self, workflow, proposal, patches, checks) -> str | None:
         if workflow.status in {"completed", "failed", "cancelled"}:

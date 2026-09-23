@@ -40,6 +40,19 @@ class CodingWorkflowCreate(BaseModel):
     step_id: str | None = None
 
 
+class CodingExecutionAttempt(BaseModel):
+    attempt_id: str
+    workflow_id: str
+    spec_id: str
+    plan_id: str
+    step_id: str
+    kind: str
+    sequence: int
+    status: str
+    trace_id: str | None = None
+    created_at: datetime
+
+
 class CodingWorkflow(BaseModel):
     workflow_id: str
     scope: str
@@ -66,6 +79,7 @@ class CodingWorkflow(BaseModel):
     parent_session_id: str | None = None
     parent_plan_id: str | None = None
     parent_step_id: str | None = None
+    execution_attempts: list[CodingExecutionAttempt] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -132,8 +146,16 @@ class CodingWorkflowService:
         for spec_id, approval_id in zip(item.mutation_spec_ids, approval_request_ids):
             runtime, authorization, approval = self.bridge.prepare(scope=scope, spec_id=spec_id, approval_request_id=approval_id)
             spec = self.specs.get(spec_id, scope)
-            result = self.executor.execute_once(scope=scope, plan_id=self._require(workflow_id, scope).plan_id or "", step_id=spec.step_id, tool_name=runtime.tool_name, authorization=authorization, approval=approval, arguments=runtime.arguments, verification_policy=runtime.verification_policy, session_id=runtime.session_id)
-            traces.append(result["trace_id"])
+            item = self._record_attempt(item, spec_id, spec.step_id, "patch")
+            attempt = item.execution_attempts[-1]
+            try:
+                result = self.executor.execute_once(scope=scope, plan_id=item.plan_id or "", step_id=spec.step_id, tool_name=runtime.tool_name, authorization=authorization, approval=approval, arguments=runtime.arguments, verification_policy=runtime.verification_policy, session_id=runtime.session_id, trace_metadata={"workflow_id": workflow_id, "spec_id": spec_id, "attempt_kind": "patch", "attempt_sequence": attempt.sequence})
+                trace_id = result["trace_id"]
+                self._finish_attempt(workflow_id, scope, attempt.attempt_id, "succeeded", trace_id)
+                traces.append(trace_id)
+            except Exception as exc:
+                self._finish_attempt(workflow_id, scope, attempt.attempt_id, "failed", getattr(exc, "trace_id", None))
+                raise
         item = self._require(workflow_id, scope).model_copy(update={"mutation_trace_ids": traces, "status": "awaiting_checks"}); self._save(item); return item
 
     def prepare_checks(self, workflow_id: str, scope: str, checks: list[CheckAction]) -> CodingWorkflow:
@@ -156,10 +178,14 @@ class CodingWorkflowService:
             self.specs.mark_ready(spec_id, scope)
             runtime, authorization, approval = self.bridge.prepare(scope=scope, spec_id=spec_id)
             spec = self.specs.get(spec_id, scope)
+            item = self._record_attempt(item, spec_id, spec.step_id, "check")
+            attempt = item.execution_attempts[-1]
             try:
-                result = self.executor.execute_once(scope=scope, plan_id=item.plan_id or "", step_id=spec.step_id, tool_name=runtime.tool_name, authorization=authorization, approval=approval, arguments=runtime.arguments, verification_policy=runtime.verification_policy, session_id=runtime.session_id)
+                result = self.executor.execute_once(scope=scope, plan_id=item.plan_id or "", step_id=spec.step_id, tool_name=runtime.tool_name, authorization=authorization, approval=approval, arguments=runtime.arguments, verification_policy=runtime.verification_policy, session_id=runtime.session_id, trace_metadata={"workflow_id": workflow_id, "spec_id": spec_id, "attempt_kind": "check", "attempt_sequence": attempt.sequence})
             except Exception as exc:
+                self._finish_attempt(workflow_id, scope, attempt.attempt_id, "failed", getattr(exc, "trace_id", None))
                 failed = self._require(workflow_id, scope).model_copy(update={"status": "failed", "outcome": "check_failed"}); self._save(failed); raise ValueError("check failed") from exc
+            self._finish_attempt(workflow_id, scope, attempt.attempt_id, "succeeded", result["trace_id"])
             traces.append(result["trace_id"])
         item = self._require(workflow_id, scope).model_copy(update={"check_trace_ids": traces, "status": "awaiting_verification"}); self._save(item); return item
 
@@ -186,6 +212,19 @@ class CodingWorkflowService:
         item = self.get(workflow_id, scope)
         if item is None: raise ValueError("workflow not found")
         return item
+
+    def _record_attempt(self, item: CodingWorkflow, spec_id: str, step_id: str, kind: str) -> CodingWorkflow:
+        plan_id = item.plan_id or ""
+        sequence = 1 + max((attempt.sequence for attempt in item.execution_attempts if attempt.spec_id == spec_id), default=0)
+        attempt = CodingExecutionAttempt(attempt_id=str(uuid4()), workflow_id=item.workflow_id, spec_id=spec_id, plan_id=plan_id, step_id=step_id, kind=kind, sequence=sequence, status="started", created_at=datetime.now(UTC))
+        updated = item.model_copy(update={"execution_attempts": [*item.execution_attempts, attempt]})
+        self._save(updated)
+        return updated
+
+    def _finish_attempt(self, workflow_id: str, scope: str, attempt_id: str, status: str, trace_id: str | None) -> None:
+        item = self._require(workflow_id, scope)
+        attempts = [attempt.model_copy(update={"status": status, "trace_id": trace_id}) if attempt.attempt_id == attempt_id else attempt for attempt in item.execution_attempts]
+        self._save(item.model_copy(update={"execution_attempts": attempts}))
 
     def _save(self, item: CodingWorkflow) -> None:
         with sqlite3.connect(self.path) as db: db.execute("INSERT OR REPLACE INTO coding_workflows VALUES (?, ?)", (item.workflow_id, item.model_dump_json()))

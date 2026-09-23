@@ -59,6 +59,18 @@ def test_coding_workflow_creation_is_persisted(tmp_path: Path) -> None:
     assert service.get(item.workflow_id, "other") is None
 
 
+def test_execution_attempt_linkage_is_explicit_and_restart_safe(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))
+    item = item.model_copy(update={"plan_id": "plan"})
+    service._save(item)
+    item = service._record_attempt(item, "spec-a", "step-a", "patch")
+    service._finish_attempt(item.workflow_id, "s", item.execution_attempts[0].attempt_id, "failed", "trace-a")
+    restarted = _service(tmp_path).get(item.workflow_id, "s")
+    assert restarted is not None
+    assert [(attempt.spec_id, attempt.sequence, attempt.status, attempt.trace_id) for attempt in restarted.execution_attempts] == [("spec-a", 1, "failed", "trace-a")]
+
+
 def test_patch_action_is_bounded_by_workflow_service(tmp_path: Path) -> None:
     service = _service(tmp_path)
     item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))
