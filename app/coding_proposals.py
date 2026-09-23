@@ -54,6 +54,8 @@ class CodingProposal(BaseModel):
     check_spec_ids: list[str] = Field(default_factory=list)
     conversion_status: str | None = None
     converted_at: datetime | None = None
+    spec_review_status: str | None = None
+    spec_reviewed_at: datetime | None = None
 
 
 class CodingProposalService:
@@ -115,7 +117,38 @@ class CodingProposalService:
         for step, check in zip(plan.steps[len(proposal.changes):], proposal.checks):
             spec = self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True})
             check_ids.append(spec.id)
-        updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids, "conversion_status": "converted", "converted_at": datetime.now(UTC), "updated_at": datetime.now(UTC)})
+        updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids, "conversion_status": "converted", "spec_review_status": "pending", "converted_at": datetime.now(UTC), "updated_at": datetime.now(UTC)})
+        self._save(updated); return updated
+
+    def spec_review(self, proposal_id: str, scope: str) -> dict:
+        proposal = self.get(proposal_id, scope)
+        if proposal is None or proposal.conversion_status != "converted": raise ValueError("proposal specs unavailable")
+        return {"proposal_id": proposal.proposal_id, "workflow_id": proposal.workflow_id, "scope": proposal.scope, "workspace": proposal.workspace, "status": proposal.spec_review_status, "patch_specs": [{"spec_id": sid, "tool": "filesystem.apply_patch", "relative_path": c.relative_path, "expected_preview": c.expected_text[:500], "replacement_preview": c.replacement[:500], "expected_hash": proposal.target_hashes.get(c.relative_path)} for sid, c in zip(proposal.patch_spec_ids, proposal.changes)], "check_specs": [{"spec_id": sid, "tool": "workspace.run_check", "check_id": c.check_id, "targets": c.targets} for sid, c in zip(proposal.check_spec_ids, proposal.checks)]}
+
+    def accept_specs(self, proposal_id: str, scope: str, workspace: str, reviewer_session_id: str | None = None) -> CodingProposal:
+        proposal = self.get(proposal_id, scope)
+        if proposal is None or proposal.workspace != workspace or proposal.conversion_status != "converted": raise ValueError("proposal specs unavailable")
+        if proposal.spec_review_status != "pending": return proposal
+        if reviewer_session_id and reviewer_session_id == proposal.analyst_task_id: raise ValueError("worker cannot review specs")
+        status = self.git.status(workspace); dirty = {line[3:].strip().split(" -> ")[-1] for line in status.splitlines() if line and not line.startswith("##")}
+        for change in proposal.changes:
+            path = self.workspaces.resolve_path(workspace, change.relative_path)
+            if change.relative_path in dirty or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != proposal.target_hashes.get(change.relative_path) or change.expected_text not in path.read_text(encoding="utf-8", errors="replace"):
+                raise ValueError("proposal specs are stale")
+        now = datetime.now(UTC)
+        updated = proposal.model_copy(update={"spec_review_status": "accepted", "spec_reviewed_at": now, "updated_at": now})
+        with sqlite3.connect(self.path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            for sid in [*proposal.patch_spec_ids, *proposal.check_spec_ids]: db.execute("UPDATE execution_specs SET status='ready', updated_at=? WHERE id=? AND scope=? AND status='draft'", (now.isoformat(), sid, scope))
+            db.execute("UPDATE coding_proposals SET payload_json=? WHERE proposal_id=?", (updated.model_dump_json(), proposal_id))
+        return updated
+
+    def reject_specs(self, proposal_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
+        proposal = self.get(proposal_id, scope)
+        if proposal is None or proposal.conversion_status != "converted": raise ValueError("proposal specs unavailable")
+        if reviewer_session_id and reviewer_session_id == proposal.analyst_task_id: raise ValueError("worker cannot review specs")
+        if proposal.spec_review_status != "pending": return proposal
+        updated = proposal.model_copy(update={"spec_review_status": "rejected", "spec_reviewed_at": datetime.now(UTC), "updated_at": datetime.now(UTC)})
         self._save(updated); return updated
 
     def get(self, proposal_id: str, scope: str) -> CodingProposal | None:

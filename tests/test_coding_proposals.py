@@ -65,3 +65,19 @@ def test_accepted_proposal_conversion_creates_only_draft_specs(tmp_path: Path) -
     assert converted.patch_spec_ids == ["spec-1"]
     assert converted.status == "accepted"
     assert (tmp_path / "target.txt").read_text(encoding="utf-8") == "before"
+
+
+def test_spec_review_is_explicit_and_restart_safe(tmp_path: Path) -> None:
+    (tmp_path / "target.txt").write_text("before", encoding="utf-8")
+    workflow_service = _service(tmp_path)
+    workflow = workflow_service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    workflow_service._save(workflow.model_copy(update={"status": "awaiting_analysis_review", "analyst_task_id": "analyst"}))
+    proposals = CodingProposalService(tmp_path / "state.db", workflow_service, WorkspaceRegistry({"ws": tmp_path}), workflow_service.git)
+    proposal = proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[ProposedChange(relative_path="target.txt", expected_text="before", replacement="after")]))
+    proposal = proposals.review(proposal.proposal_id, "s", "accepted", "supervisor")
+    proposal = proposal.model_copy(update={"conversion_status": "converted", "patch_spec_ids": ["spec-1"], "spec_review_status": "pending"})
+    proposals._save(proposal)
+    assert proposals.spec_review(proposal.proposal_id, "s")["status"] == "pending"
+    assert proposals.reject_specs(proposal.proposal_id, "s", "supervisor").spec_review_status == "rejected"
+    restarted = CodingProposalService(tmp_path / "state.db", workflow_service, WorkspaceRegistry({"ws": tmp_path}), workflow_service.git)
+    assert restarted.get(proposal.proposal_id, "s").spec_review_status == "rejected"

@@ -802,3 +802,27 @@ async def convert_coding_proposal(workflow_id: str, scope: str, workspace: str) 
     except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal conversion unavailable") from exc
 
 
+@app.get("/supervisor-coding-workflows/{workflow_id}/proposal/spec-review")
+async def get_coding_spec_review(workflow_id: str, scope: str) -> dict:
+    item = coding_proposal_service.get(workflow_id, scope)
+    if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
+    try: return coding_proposal_service.spec_review(item.proposal_id, scope)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Spec review unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal/spec-review/accept", response_model=CodingProposal)
+async def accept_coding_spec_review(workflow_id: str, scope: str, workspace: str, reviewer_session_id: str | None = None) -> CodingProposal:
+    item = coding_proposal_service.get(workflow_id, scope)
+    if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
+    try: return coding_proposal_service.accept_specs(item.proposal_id, scope, workspace, reviewer_session_id)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Spec review unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal/spec-review/reject", response_model=CodingProposal)
+async def reject_coding_spec_review(workflow_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
+    item = coding_proposal_service.get(workflow_id, scope)
+    if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
+    try: return coding_proposal_service.reject_specs(item.proposal_id, scope, reviewer_session_id)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Spec review unavailable") from exc
+
+
