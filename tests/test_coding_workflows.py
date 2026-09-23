@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from app.coding_workflows import CodingWorkflowCreate, CodingWorkflowService, PatchAction
+from app.coding_workflows import (
+    CheckAction,
+    CodingWorkflowCreate,
+    CodingWorkflowService,
+    PatchAction,
+)
 from app.policy.workspaces import WorkspaceAccessError, WorkspaceRegistry
 
 
@@ -61,3 +66,16 @@ def test_patch_action_is_bounded_by_workflow_service(tmp_path: Path) -> None:
     patches = [PatchAction(relative_path=f"f{i}.txt", expected_text="a", replacement="b") for i in range(6)]
     with pytest.raises(ValueError, match="five"):
         service.prepare(item.workflow_id, "s", patches)
+
+
+def test_coding_workflow_cancellation_is_terminal_and_idempotent(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))
+    cancelled = service.cancel(item.workflow_id, "s", "stop")
+    assert cancelled.status == "cancelled"
+    assert service.cancel(item.workflow_id, "s").status == "cancelled"
+
+
+def test_check_action_has_bounded_shape() -> None:
+    action = CheckAction(check_id="pytest", targets=["tests/test_coding_workflows.py"])
+    assert action.check_id == "pytest"

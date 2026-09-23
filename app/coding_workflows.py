@@ -136,6 +136,52 @@ class CodingWorkflowService:
             traces.append(result["trace_id"])
         item = self._require(workflow_id, scope).model_copy(update={"mutation_trace_ids": traces, "status": "awaiting_checks"}); self._save(item); return item
 
+    def prepare_checks(self, workflow_id: str, scope: str, checks: list[CheckAction]) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if item.status != "awaiting_checks": raise ValueError("checks are not available")
+        if not checks or len(checks) > self.MAX_ACTIONS: raise ValueError("at most five checks")
+        plan = self.plans.create(PlanCreate(scope=scope, workspace=item.workspace, goal=f"Checks: {item.instruction}", steps=[PlanStepCreate(title=f"Run {c.check_id}", metadata={"coding_check": True}) for c in checks]))
+        ids = []
+        for step, check in zip(plan.steps, checks):
+            if check.check_id not in {"pytest", "ruff", "git_diff_check"}: raise ValueError("unsupported check")
+            spec = self.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": item.workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}, session_id=item.parent_session_id)
+            ids.append(spec.id)
+        item = item.model_copy(update={"plan_id": plan.id, "check_spec_ids": ids, "status": "awaiting_checks"}); self._save(item); return item
+
+    def execute_checks(self, workflow_id: str, scope: str) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if not item.check_spec_ids: raise ValueError("checks are not prepared")
+        traces = []
+        for spec_id in item.check_spec_ids:
+            self.specs.mark_ready(spec_id, scope)
+            runtime, authorization, approval = self.bridge.prepare(scope=scope, spec_id=spec_id)
+            spec = self.specs.get(spec_id, scope)
+            try:
+                result = self.executor.execute_once(scope=scope, plan_id=item.plan_id or "", step_id=spec.step_id, tool_name=runtime.tool_name, authorization=authorization, approval=approval, arguments=runtime.arguments, verification_policy=runtime.verification_policy, session_id=runtime.session_id)
+            except Exception as exc:
+                failed = self._require(workflow_id, scope).model_copy(update={"status": "failed", "outcome": "check_failed"}); self._save(failed); raise ValueError("check failed") from exc
+            traces.append(result["trace_id"])
+        item = self._require(workflow_id, scope).model_copy(update={"check_trace_ids": traces, "status": "awaiting_verification"}); self._save(item); return item
+
+    async def start_verification(self, workflow_id: str, scope: str) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if item.status != "awaiting_verification": raise ValueError("verification is not available")
+        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=item.workspace, instruction=f"Verify objective: {item.instruction[:1600]} Files changed: {', '.join(item.changed_files[:20])}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id)
+        auth = self.agents.authorize_dispatch(request); result = await self.agents.dispatch(request, auth)
+        audits = self.agents.audits(scope, 100); dispatch_id = audits[0].dispatch_id if audits and audits[0].task_id == result.task_id else None
+        updated = self._require(workflow_id, scope).model_copy(update={"verifier_task_id": result.task_id, "verifier_dispatch_id": dispatch_id, "verifier_review_status": "pending", "status": "awaiting_verifier_review" if result.status == "completed" else "failed"}); self._save(updated); return updated
+
+    def review_verifier(self, workflow_id: str, scope: str, status: str, reviewer_session_id: str | None = None, note: str | None = None) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if item.status != "awaiting_verifier_review" or not item.verifier_task_id: raise ValueError("verifier review unavailable")
+        review = self.agents.review(item.verifier_task_id, scope, status, reviewer_session_id, note)
+        updated = item.model_copy(update={"verifier_review_status": review.status, "status": "completed" if status == "accepted" else "failed", "outcome": "verified" if status == "accepted" else "rejected"}); self._save(updated); return updated
+
+    def cancel(self, workflow_id: str, scope: str, reason: str | None = None) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if item.status in {"completed", "failed", "cancelled"}: return item
+        updated = item.model_copy(update={"status": "cancelled", "outcome": "cancelled"}); self._save(updated); return updated
+
     def _require(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self.get(workflow_id, scope)
         if item is None: raise ValueError("workflow not found")

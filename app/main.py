@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
 from app.coding_workflows import (
+    CheckAction,
     CodingWorkflow,
     CodingWorkflowCreate,
     CodingWorkflowService,
@@ -710,5 +711,53 @@ async def prepare_coding_implementation(workflow_id: str, scope: str, patches: l
         return coding_workflow_service.prepare(workflow_id, scope, patches)
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=409, detail="Implementation preparation unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/prepare-checks", response_model=CodingWorkflow)
+async def prepare_coding_checks(workflow_id: str, scope: str, checks: list[CheckAction]) -> CodingWorkflow:
+    try:
+        return coding_workflow_service.prepare_checks(workflow_id, scope, checks)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Check preparation unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/execute-checks", response_model=CodingWorkflow)
+async def execute_coding_checks(workflow_id: str, scope: str) -> CodingWorkflow:
+    try:
+        return coding_workflow_service.execute_checks(workflow_id, scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Check execution unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/start-verification", response_model=CodingWorkflow)
+async def start_coding_verification(workflow_id: str, scope: str) -> CodingWorkflow:
+    try:
+        return await coding_workflow_service.start_verification(workflow_id, scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Verification unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/accept-verifier", response_model=CodingWorkflow)
+async def accept_coding_verifier(workflow_id: str, scope: str, reviewer_session_id: str | None = None, note: str | None = None) -> CodingWorkflow:
+    try:
+        return coding_workflow_service.review_verifier(workflow_id, scope, "accepted", reviewer_session_id, note)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Verifier review unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/reject-verifier", response_model=CodingWorkflow)
+async def reject_coding_verifier(workflow_id: str, scope: str, reviewer_session_id: str | None = None, note: str | None = None) -> CodingWorkflow:
+    try:
+        return coding_workflow_service.review_verifier(workflow_id, scope, "rejected", reviewer_session_id, note)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Verifier review unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/cancel", response_model=CodingWorkflow)
+async def cancel_coding_workflow(workflow_id: str, scope: str, reason: str | None = None) -> CodingWorkflow:
+    try:
+        return coding_workflow_service.cancel(workflow_id, scope, reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Coding workflow not found") from exc
 
 
