@@ -39,7 +39,7 @@ class ToolApprovalRequest:
     session_id: str | None
     arguments_fingerprint: str
     summary: str
-    status: Literal["pending", "approved", "rejected"]
+    status: Literal["pending", "approved", "rejected", "consumed"]
 
 
 @dataclass(frozen=True)
@@ -144,6 +144,19 @@ class ToolRegistry:
                 raise KeyError(request_id)
             return current[0]
         return self._load_request(request_id, scope)
+
+    def issue_approved_request(self, request_id: str, scope: str, authorization: ToolAuthorization, arguments: dict[str, Any], session_id: str | None) -> ToolApproval:
+        request = self.get_approval_request(request_id, scope)
+        tool = self.get(request.tool)
+        fingerprint = hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+        if request.status != "approved" or not tool.high_impact or request.scope != scope or request.session_id != session_id or request.arguments_fingerprint != fingerprint or not self.validate_authorization(authorization, request.tool, scope, session_id):
+            raise ValueError("approval request is not valid")
+        consumed = ToolApproval(str(uuid4()), authorization.token, request.tool, scope, session_id, fingerprint)
+        updated = ToolApprovalRequest(request.id, request.tool, request.scope, request.session_id, request.arguments_fingerprint, request.summary, "consumed")
+        self._approval_requests[request.id] = (updated, None)
+        self._persist_request(updated)
+        self._approvals[consumed.token] = consumed
+        return consumed
 
     def register(self, tool: ToolDefinition) -> None:
         if tool.name in self._tools:
