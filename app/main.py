@@ -15,6 +15,7 @@ from app.memory.models import MemoryCreate, MemoryRecord, MemoryUpdate
 from app.memory.proposals import MemoryProposal, MemoryProposalCreate, ProposalService
 from app.memory.service import MemoryService
 from app.memory.store import MemoryStore
+from app.plans.models import PlanCreate, PlanStep, ProjectPlan, StepStatus
 from app.plans.service import PlanService
 from app.policy.factory import build_workspace_registry
 from app.policy.workspaces import WorkspaceInfo
@@ -237,5 +238,53 @@ async def agent_query(
     request: AgentQueryRequest,
 ) -> AgentQueryResponse:
     return await agent_service.query(request)
+
+
+@app.post("/plans", response_model=ProjectPlan)
+async def create_plan(request: PlanCreate) -> ProjectPlan:
+    return plan_service.create(request)
+
+
+@app.get("/plans", response_model=list[ProjectPlan])
+async def list_plans(scope: str, limit: int = 50, status: str | None = None) -> list[ProjectPlan]:
+    plans = plan_service.list(scope, limit)
+    return [plan for plan in plans if status is None or plan.status == status]
+
+
+@app.get("/plans/{plan_id}/next-step", response_model=PlanStep | None)
+async def next_plan_step(plan_id: str, scope: str) -> PlanStep | None:
+    if plan_service.get(plan_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return plan_service.next_step(plan_id, scope)
+
+
+@app.get("/plans/{plan_id}", response_model=ProjectPlan)
+async def get_plan(plan_id: str, scope: str) -> ProjectPlan:
+    plan = plan_service.get(plan_id, scope)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return plan
+
+
+@app.patch("/plans/{plan_id}/steps/{step_id}", response_model=ProjectPlan)
+async def update_plan_step(plan_id: str, step_id: str, scope: str, status: StepStatus, reference: str | None = None) -> ProjectPlan:
+    try:
+        plan = plan_service.transition(plan_id, step_id, status, scope, reference)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Invalid plan step transition") from exc
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return plan
+
+
+@app.post("/plans/{plan_id}/cancel", response_model=ProjectPlan)
+async def cancel_plan(plan_id: str, scope: str) -> ProjectPlan:
+    try:
+        plan = plan_service.cancel(plan_id, scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Plan cannot be cancelled") from exc
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return plan
 
 
