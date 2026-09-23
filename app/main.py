@@ -11,6 +11,9 @@ from app.knowledge.embeddings import OpenAICompatibleEmbeddingProvider
 from app.knowledge.models import KnowledgeIndexResult, KnowledgeSearchResult
 from app.knowledge.service import KnowledgeService
 from app.knowledge.store import KnowledgeStore
+from app.memory.models import MemoryCreate, MemoryRecord, MemoryUpdate
+from app.memory.service import MemoryService
+from app.memory.store import MemoryStore
 from app.policy.factory import build_workspace_registry
 from app.policy.workspaces import WorkspaceInfo
 from app.providers.factory import build_provider_registry, get_default_model
@@ -50,6 +53,7 @@ tool_registry = build_tool_registry(filesystem, git, knowledge_service)
 action_journal = ActionJournal(
     settings.action_journal_path
 )
+memory_service = MemoryService(MemoryStore(settings.action_journal_path))
 
 agent_service = AgentService(
     settings,
@@ -134,6 +138,44 @@ async def journal_session(
     session_id: str,
 ) -> list[ActionEntry]:
     return action_journal.list_session(session_id)
+
+
+@app.post("/memories", response_model=MemoryRecord)
+async def create_memory(request: MemoryCreate) -> MemoryRecord:
+    return memory_service.create(request)
+
+
+@app.get("/memories", response_model=list[MemoryRecord])
+async def list_memories(scope: str, category: str | None = None, status: str = "active", limit: int = 50) -> list[MemoryRecord]:
+    return memory_service.list(scope, category, status, limit)
+
+
+@app.get("/memories/search", response_model=list[MemoryRecord])
+async def search_memories(scope: str, query: str, limit: int = 20) -> list[MemoryRecord]:
+    return memory_service.search(scope, query, limit)
+
+
+@app.get("/memories/{memory_id}", response_model=MemoryRecord)
+async def get_memory(memory_id: str) -> MemoryRecord:
+    record = memory_service.get(memory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return record
+
+
+@app.patch("/memories/{memory_id}", response_model=MemoryRecord)
+async def update_memory(memory_id: str, request: MemoryUpdate) -> MemoryRecord:
+    record = memory_service.update(memory_id, request)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return record
+
+
+@app.delete("/memories/{memory_id}")
+async def delete_memory(memory_id: str) -> dict[str, bool]:
+    if not memory_service.delete(memory_id):
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"deleted": True}
 
 
 @app.post("/knowledge/index/{workspace}")
