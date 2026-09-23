@@ -8,6 +8,7 @@ from app.coding_actions import (
     CodingJobActionResult,
     SupervisorCodingActionService,
 )
+from app.coding_guidance import CodingGuidanceService, CodingJobGuidance
 from app.coding_jobs import CodingJob, CodingJobService
 from app.coding_proposals import CodingProposal, CodingProposalService, ProposalCreate
 from app.coding_workflows import (
@@ -128,6 +129,7 @@ coding_workflow_service = CodingWorkflowService(settings.action_journal_path, wo
 coding_proposal_service = CodingProposalService(settings.action_journal_path, coding_workflow_service, workspace_registry, git)
 coding_job_service = CodingJobService(coding_workflow_service, coding_proposal_service, execution_spec_service, execution_trace_service, tool_registry)
 coding_action_service = SupervisorCodingActionService(coding_job_service, coding_workflow_service, coding_proposal_service, tool_registry)
+coding_guidance_service = CodingGuidanceService(coding_job_service)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 supervisor_policy = SupervisorPolicy()
 
@@ -791,6 +793,13 @@ async def get_coding_job(workflow_id: str, scope: str) -> CodingJob:
     if job is None:
         raise HTTPException(status_code=404, detail="Coding job not found")
     return job
+
+@app.get("/supervisor-coding-workflows/{workflow_id}/guidance", response_model=CodingJobGuidance)
+async def get_coding_guidance(workflow_id: str, scope: str) -> CodingJobGuidance:
+    guidance = coding_guidance_service.get(workflow_id, scope)
+    if guidance is None:
+        raise HTTPException(status_code=404, detail="Coding guidance not found")
+    return guidance
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/action", response_model=CodingJobActionResult)
 async def dispatch_coding_job_action(workflow_id: str, request: CodingJobActionRequest) -> CodingJobActionResult:
