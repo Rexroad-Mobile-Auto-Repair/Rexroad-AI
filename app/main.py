@@ -44,6 +44,7 @@ from app.subagents import (
     SubAgentService,
     SubAgentTask,
     SubAgentTaskCreate,
+    SupervisorDispatchAudit,
     SupervisorDispatchRequest,
 )
 from app.supervisor_policy import (
@@ -420,6 +421,19 @@ async def supervisor_dispatch(request: SupervisorDispatchRequest) -> SubAgentRes
         return await sub_agent_service.dispatch(request, authorization)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Dispatch authorization denied") from exc
+
+
+@app.get("/supervisor-dispatches", response_model=list[SupervisorDispatchAudit])
+async def list_supervisor_dispatches(scope: str, limit: int = 20) -> list[SupervisorDispatchAudit]:
+    return sub_agent_service.audits(scope, limit)
+
+
+@app.get("/supervisor-dispatches/{dispatch_id}", response_model=SupervisorDispatchAudit)
+async def get_supervisor_dispatch(dispatch_id: str, scope: str) -> SupervisorDispatchAudit:
+    audit = sub_agent_service.audit(dispatch_id, scope)
+    if audit is None:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    return audit
 
 
 @app.get("/sub-agent-tasks/{task_id}")

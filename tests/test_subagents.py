@@ -92,6 +92,11 @@ async def test_dispatch_requires_matching_one_time_authorization(tmp_path):
     assert result.status == "completed"
     with pytest.raises(ValueError):
         await service.dispatch(request, authorization)
+    audit = service.audits("s")[0]
+    assert audit.task_id == result.task_id
+    assert audit.recommended_profile == "researcher"
+    assert audit.instruction_fingerprint == authorization.fingerprint
+    assert authorization.token not in audit.model_dump_json()
 
 
 def test_dispatch_rejects_wrong_profile_scope_and_instruction(tmp_path):
