@@ -29,6 +29,7 @@ class ActionEntry(BaseModel):
 
 class SessionSummary(BaseModel):
     session_id: str
+    title: str = "New conversation"
     provider: str
     model: str
     action_count: int

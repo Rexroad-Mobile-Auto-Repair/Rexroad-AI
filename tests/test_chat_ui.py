@@ -42,3 +42,12 @@ def test_unknown_chat_workspace_is_rejected(monkeypatch):
     monkeypatch.setattr(main, "agent_service", FakeAgent())
     response = TestClient(main.app).post("/agent/query", json={"message": "Hello", "workspace": "unknown"})
     assert response.status_code == 404
+
+
+def test_session_summary_uses_first_user_message_title(tmp_path):
+    from app.journal.store import ActionJournal
+
+    journal = ActionJournal(tmp_path / "journal.sqlite3")
+    journal.record(session_id="session-1", provider="test", model="test", tool="", permission="", arguments={}, status="success")
+    journal.append_event(session_id="session-1", event_type="user_request", payload={"content": "Inspect the acceptance workspace"})
+    assert journal.list_sessions(limit=1)[0].title == "Inspect the acceptance workspace"

@@ -18,6 +18,17 @@ from app.journal.models import (
 
 class ActionJournal:
     EVENT_CONTENT_LIMIT = 2000
+
+    @staticmethod
+    def _session_title(connection: sqlite3.Connection, session_id: str) -> str:
+        row = connection.execute("SELECT payload_json FROM agent_events WHERE session_id = ? AND event_type = 'user_request' ORDER BY sequence LIMIT 1", (session_id,)).fetchone()
+        if row is None:
+            return "New conversation"
+        try:
+            message = str(json.loads(row[0]).get("content", "")).strip()
+        except (TypeError, ValueError):
+            return "New conversation"
+        return (message[:60].rstrip() + ("…" if len(message) > 60 else "")) or "New conversation"
     def __init__(self, database_path: str | Path) -> None:
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(
@@ -330,9 +341,12 @@ class ActionJournal:
                 (limit,),
             ).fetchall()
 
+        with self._connect() as connection:
+            titles = {row["session_id"]: self._session_title(connection, row["session_id"]) for row in rows}
         return [
             SessionSummary(
                 session_id=row["session_id"],
+                title=titles[row["session_id"]],
                 provider=row["provider"],
                 model=row["model"],
                 action_count=row["action_count"],
@@ -384,8 +398,11 @@ class ActionJournal:
         if row is None:
             return None
 
+        with self._connect() as connection:
+            title = self._session_title(connection, session_id)
         return SessionSummary(
             session_id=row["session_id"],
+            title=title,
             provider=row["provider"],
             model=row["model"],
             action_count=row["action_count"],
