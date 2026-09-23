@@ -3,6 +3,7 @@ from app.knowledge.service import KnowledgeService
 from app.memory.proposals import ProposalService
 from app.memory.service import MemoryService
 from app.plans.service import PlanService
+from app.tools.checks import WorkspaceChecks
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
 from app.tools.memory import MemoryTools
@@ -21,6 +22,7 @@ def build_tool_registry(
     cross_workspace: CrossWorkspaceKnowledgeService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(database_path)
+    checks = WorkspaceChecks(filesystem.workspaces)
 
     registry.register(
         ToolDefinition(
@@ -40,6 +42,25 @@ def build_tool_registry(
                     },
                 },
                 "required": ["workspace"],
+                "additionalProperties": False,
+            },
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="workspace.run_check",
+            description="Run one server-defined bounded check in an approved workspace.",
+            permission="workspace_check",
+            handler=checks.run_check,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {"type": "string"},
+                    "check_id": {"type": "string", "enum": ["pytest", "ruff", "git_diff_check"]},
+                    "targets": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+                },
+                "required": ["workspace", "check_id"],
                 "additionalProperties": False,
             },
         )

@@ -14,6 +14,10 @@ class ReadOnlyFilesystem:
     def __init__(self, workspaces: WorkspaceRegistry) -> None:
         self._workspaces = workspaces
 
+    @property
+    def workspaces(self) -> WorkspaceRegistry:
+        return self._workspaces
+
     def list(
         self,
         workspace: str,
