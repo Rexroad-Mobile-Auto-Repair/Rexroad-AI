@@ -25,6 +25,7 @@ from app.plans.specs import ExecutionSpec, ExecutionSpecService
 from app.plans.traces import ExecutionTrace, ExecutionTraceService
 from app.policy.factory import build_workspace_registry
 from app.policy.workspaces import WorkspaceInfo
+from app.project_state import ProjectState, ProjectStateService
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
 from app.tools.factory import build_tool_registry
@@ -74,6 +75,7 @@ execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan
 execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
 plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal)
 execution_trace_service = ExecutionTraceService(action_journal)
+project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
 
 agent_service = AgentService(
     settings,
@@ -361,6 +363,14 @@ async def get_execution_trace(trace_id: str, scope: str) -> ExecutionTrace:
     if trace is None:
         raise HTTPException(status_code=404, detail="Execution trace not found")
     return trace
+
+
+@app.get("/project-state", response_model=ProjectState)
+async def get_project_state(workspace: str, scope: str) -> ProjectState:
+    try:
+        return project_state_service.get(workspace, scope)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=404, detail="Project state not found") from exc
 
 
 @app.get("/plans", response_model=list[ProjectPlan])
