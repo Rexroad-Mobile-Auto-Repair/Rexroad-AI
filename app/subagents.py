@@ -233,6 +233,47 @@ class SubAgentService:
             db.execute("INSERT OR IGNORE INTO sub_agent_reviews VALUES (?, ?, 'pending', NULL, NULL, ?)", (task_id, task.scope, result.completed_at.isoformat()))
         return result
 
+    async def run_with_tools(self, task_id: str, dispatch_id: str, provider_name: str, model: str, max_calls: int = 3) -> SubAgentResult:
+        if max_calls < 1 or max_calls > 5 or self._providers is None or self._tools is None:
+            raise ValueError("invalid worker loop")
+        record = self.get(task_id)
+        if record is None:
+            raise ValueError("task not found")
+        task, _ = record
+        provider = self._providers.get(provider_name)  # type: ignore[arg-type]
+        allowed = [self._tools.get(name) for name in task.allowed_tools]
+        allowed = [tool for tool in allowed if tool.permission == "read" and not tool.high_impact]
+        specs = [tool for tool in self._tools.specs() if any(tool.name == item.name for item in allowed)]
+        messages = [ModelMessage(role="user", content=f"Worker profile: {task.worker_profile}\nScope: {task.scope}\n{task.instruction[:4000]}")]
+        calls = 0
+        started = datetime.now(UTC)
+        while calls < max_calls:
+            response = await provider.generate(ModelRequest(model=model, messages=messages, tools=specs))
+            if not response.tool_calls:
+                result = SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="completed", summary=str(sanitize_output(response.content))[:4000], tool_usage=[item["tool"] for item in self.audit(dispatch_id, task.scope).tool_usage] if self.audit(dispatch_id, task.scope) else [], started_at=started, completed_at=datetime.now(UTC))
+                with sqlite3.connect(self._path) as db:
+                    db.execute("UPDATE sub_agent_tasks SET result_json=? WHERE task_id=?", (result.model_dump_json(), task_id))
+                return result
+            for call in response.tool_calls:
+                calls += 1
+                if calls > max_calls or call.name not in {item.name for item in allowed}:
+                    self.record_tool_usage(dispatch_id, task.scope, call.name, "read", "denied")
+                    return SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="tool_denied_or_limit", started_at=started, completed_at=datetime.now(UTC))
+                tool = self._tools.get(call.name)
+                auth = self._tools.authorize(call.name, task.scope, task.parent_session_id)
+                if not self._tools.validate_authorization(auth, call.name, task.scope, task.parent_session_id):
+                    self.record_tool_usage(dispatch_id, task.scope, call.name, tool.permission, "denied")
+                    return SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="authorization_denied", started_at=started, completed_at=datetime.now(UTC))
+                try:
+                    result_value = self._tools.execute(call.name, **call.arguments)
+                    safe = sanitize_output(result_value)
+                    self.record_tool_usage(dispatch_id, task.scope, call.name, tool.permission, "success", safe)
+                except Exception:  # noqa: BLE001 - tool boundary returns safe failure
+                    self.record_tool_usage(dispatch_id, task.scope, call.name, tool.permission, "error")
+                    return SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="tool_error", started_at=started, completed_at=datetime.now(UTC))
+                messages.extend([ModelMessage(role="assistant", content=response.content, tool_calls=[call]), ModelMessage(role="tool", content=json.dumps(safe, sort_keys=True), tool_call_id=call.id, tool_name=call.name)])
+        return SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="tool_call_limit", started_at=started, completed_at=datetime.now(UTC))
+
     def review(self, task_id: str, scope: str, status: str, reviewer_session_id: str | None = None, note: str | None = None) -> SubAgentReview:
         record = self.get(task_id)
         if record is None or record[0].scope != scope or record[1] is None:

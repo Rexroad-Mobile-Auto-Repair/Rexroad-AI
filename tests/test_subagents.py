@@ -1,5 +1,6 @@
 import pytest
 
+from app.providers.models import ModelResponse
 from app.subagents import PROFILES, SubAgentService, SubAgentTaskCreate, SupervisorDispatchRequest
 from app.tools.registry import ToolDefinition, ToolRegistry
 
@@ -112,3 +113,30 @@ def test_dispatch_rejects_wrong_profile_scope_and_instruction(tmp_path):
     with pytest.raises(ValueError):
         import asyncio
         asyncio.run(service.dispatch(request.model_copy(update={"scope": "other"}), authorization))
+
+
+@pytest.mark.asyncio
+async def test_bounded_provider_tool_loop_sanitizes_and_records_usage(tmp_path):
+    class Provider:
+        name = "openai_compatible"
+        def __init__(self): self.round = 0
+        async def generate(self, request):
+            self.round += 1
+            if self.round == 1:
+                from app.tools.models import ToolCall
+                return ModelResponse(provider="openai_compatible", model="m", tool_calls=[ToolCall(id="c1", name="knowledge.search", arguments={})])
+            return ModelResponse(provider="openai_compatible", model="m", content="done")
+        async def health_check(self): return True
+    from app.providers.registry import ProviderRegistry
+    providers = ProviderRegistry(); providers.register(Provider())
+    tools = ToolRegistry(); tools.register(ToolDefinition(name="knowledge.search", description="x", permission="read", handler=lambda: {"token": "secret", "ok": 1}))
+    service = SubAgentService(tmp_path / "state.sqlite3", providers, tools)
+    request = SupervisorDispatchRequest(worker_profile="researcher", scope="s", instruction="research", allowed_tools=["knowledge.search"])
+    auth = service.authorize_dispatch(request)
+    task = service.create(SubAgentTaskCreate(**request.model_dump()))
+    with __import__("sqlite3").connect(tmp_path / "state.sqlite3") as db:
+        db.execute("INSERT INTO supervisor_dispatch_audits (dispatch_id, task_id, scope, recommendation_category, recommended_profile, authorized_profile, instruction_fingerprint, status, created_at, tool_usage_json) VALUES ('d', ?, 's', 'research', 'researcher', 'researcher', ?, 'started', '2026-01-01T00:00:00+00:00', '[]')", (task.task_id, auth.fingerprint))
+    result = await service.run_with_tools(task.task_id, "d", "openai_compatible", "m")
+    assert result.status == "completed"
+    assert service.audit("d", "s").tool_usage[0]["status"] == "success"
+    assert "secret" not in service.audit("d", "s").model_dump_json()
