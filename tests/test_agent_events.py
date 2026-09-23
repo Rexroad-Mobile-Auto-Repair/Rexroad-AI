@@ -218,8 +218,10 @@ async def test_continuation_reuses_session_and_server_history(tmp_path: Path) ->
     second = await service.query(AgentQueryRequest(message="what was it?", session_id=first.session_id))
 
     assert second.session_id == first.session_id
-    assert [message.content for message in provider.requests[1].messages] == [
-        AGENT_WORKFLOW_PROMPT, "remember pineapple-47", "reply-1", "what was it?"
+    request_messages = provider.requests[1].messages
+    assert request_messages[0].content.endswith(AGENT_WORKFLOW_PROMPT)
+    assert [message.content for message in request_messages[1:]] == [
+        "remember pineapple-47", "reply-1", "what was it?"
     ]
     events = journal.list_events_for_session(first.session_id)
     assert [event.event_type for event in events] == [

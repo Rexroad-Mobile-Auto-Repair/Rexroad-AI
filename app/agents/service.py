@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
+from app.agents.context import build_agent_system_context
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.config import Settings
 from app.context.builder import ContextBudgetError, ContextBuilder
@@ -15,14 +16,7 @@ from app.providers.registry import ProviderRegistry
 from app.tools.models import ModelMessage
 from app.tools.registry import ToolRegistry
 
-AGENT_WORKFLOW_PROMPT = (
-    "You are operating inside Rexroad AI. "
-    "Before answering, determine what evidence is needed. "
-    "Use the available read-only tools when repository or workspace facts "
-    "need to be checked. Do not claim that an action occurred unless tool "
-    "output supports it. After using tools, produce a concise draft answer "
-    "based on the evidence."
-)
+AGENT_WORKFLOW_PROMPT = "Before answering, determine what evidence is needed. Use available read-only tools when facts need to be checked."
 
 VERIFICATION_PROMPT = (
     "Verification pass: review the draft answer against the tool evidence "
@@ -50,6 +44,7 @@ class AgentService:
         max_tool_rounds: int = 8,
         context_builder: ContextBuilder | None = None,
         allow_tools_without_workspace: bool = True,
+        include_identity_context: bool = False,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -58,6 +53,7 @@ class AgentService:
         self._max_tool_rounds = max_tool_rounds
         self._context_builder = context_builder or ContextBuilder()
         self._allow_tools_without_workspace = allow_tools_without_workspace
+        self._include_identity_context = include_identity_context
 
     @staticmethod
     def _history_messages(journal: ActionJournal, session_id: str, budget: int) -> list[ModelMessage]:
@@ -110,10 +106,20 @@ class AgentService:
                 payload={"content": request.message, "workspace": request.workspace},
             )
 
+        tool_specs = (
+            self._tools.specs()
+            if self._tools is not None and (request.workspace or self._allow_tools_without_workspace)
+            else []
+        )
+
+        system_context = AGENT_WORKFLOW_PROMPT
+        if self._include_identity_context:
+            system_context = build_agent_system_context(workspace=request.workspace, tools=tool_specs) + "\n" + AGENT_WORKFLOW_PROMPT
+
         messages = [
             ModelMessage(
                 role="system",
-                content=AGENT_WORKFLOW_PROMPT,
+                content=system_context,
             ),
             *history,
             ModelMessage(
@@ -121,12 +127,6 @@ class AgentService:
                 content=(f"Selected workspace context: {request.workspace}.\n" if request.workspace else "") + request.message,
             ),
         ]
-
-        tool_specs = (
-            self._tools.specs()
-            if self._tools is not None and (request.workspace or self._allow_tools_without_workspace)
-            else []
-        )
 
         tool_rounds = 0
         used_tools = False

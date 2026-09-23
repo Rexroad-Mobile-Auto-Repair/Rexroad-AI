@@ -182,6 +182,7 @@ agent_service = AgentService(
     tools=tool_registry,
     journal=action_journal,
     allow_tools_without_workspace=False,
+    include_identity_context=True,
 )
 diagnostics = build_local_diagnostics(settings)
 
