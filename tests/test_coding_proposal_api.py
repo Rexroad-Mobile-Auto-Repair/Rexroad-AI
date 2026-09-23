@@ -3,6 +3,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import main
@@ -71,6 +72,20 @@ def _real_service(tmp_path: Path):
     return service, workflows, workflow.workflow_id, parent.proposal_id
 
 
+def _db_state(path: Path, parent_id: str, task_id: str):
+    with sqlite3.connect(path) as db:
+        proposals = [json.loads(row[0]) for row in db.execute("SELECT payload_json FROM coding_proposals ORDER BY rowid").fetchall()]
+        handoff = db.execute("SELECT materialized_proposal_id FROM proposal_revision_handoffs WHERE task_id=?", (task_id,)).fetchone()[0]
+    parent = next(row for row in proposals if row["proposal_id"] == parent_id)
+    return proposals, parent, handoff
+
+
+def _restart_client(tmp_path: Path, service: CodingProposalService, workflows, monkeypatch, failure=None):
+    restarted = CodingProposalService(tmp_path / "state.db", workflows, WorkspaceRegistry({"ws": tmp_path}), workflows.git, failure_injector=failure)
+    monkeypatch.setattr(main, "coding_proposal_service", restarted)
+    return restarted, TestClient(main.app, raise_server_exceptions=False)
+
+
 def test_real_api_revision_happy_path_and_replay(tmp_path: Path, monkeypatch):
     service, _workflows, workflow_id, parent_id = _real_service(tmp_path)
     monkeypatch.setattr(main, "coding_proposal_service", service)
@@ -96,3 +111,27 @@ def test_real_api_candidate_wrong_scope_and_stale_workspace_are_safe(tmp_path: P
     assert client.get(f"/supervisor-coding-workflows/{workflow_id}/proposal/revision-candidate", params={"scope": "other"}).status_code == 409
     (tmp_path / "target.txt").write_text("external", encoding="utf-8")
     assert client.post(f"/supervisor-coding-workflows/{workflow_id}/proposal/revision-candidate/materialize", params={"scope": "scope"}).status_code == 409
+
+
+@pytest.mark.parametrize("failure_point", ["child_insert", "parent_supersession", "handoff_linkage"])
+def test_real_api_failure_rolls_back_and_retries_after_restart(tmp_path: Path, monkeypatch, failure_point: str):
+    service, workflows, workflow_id, parent_id = _real_service(tmp_path)
+    service.failure_injector = lambda label: (_ for _ in ()).throw(RuntimeError("injected")) if label == failure_point else None
+    monkeypatch.setattr(main, "coding_proposal_service", service)
+    failing = TestClient(main.app, raise_server_exceptions=False)
+    response = failing.post(f"/supervisor-coding-workflows/{workflow_id}/proposal/revision-candidate/materialize", params={"scope": "scope"})
+    assert response.status_code == 500
+    assert all(value not in response.text.lower() for value in ("sqlite", "traceback", "d:\\"))
+    proposals, parent, handoff = _db_state(tmp_path / "state.db", parent_id, "revision-task")
+    assert len(proposals) == 1 and parent["superseded_by_proposal_id"] is None and handoff is None
+    restarted, client = _restart_client(tmp_path, service, workflows, monkeypatch)
+    proposals_after, parent_after, handoff_after = _db_state(tmp_path / "state.db", parent_id, "revision-task")
+    assert proposals_after == proposals and parent_after == parent and handoff_after is None
+    success = client.post(f"/supervisor-coding-workflows/{workflow_id}/proposal/revision-candidate/materialize", params={"scope": "scope"})
+    assert success.status_code == 200
+    child_id = success.json()["proposal_id"]
+    replay = client.post(f"/supervisor-coding-workflows/{workflow_id}/proposal/revision-candidate/materialize", params={"scope": "scope"})
+    assert replay.status_code == 200 and replay.json()["proposal_id"] == child_id
+    final_rows, final_parent, final_handoff = _db_state(tmp_path / "state.db", parent_id, "revision-task")
+    assert len(final_rows) == 2 and final_parent["superseded_by_proposal_id"] == child_id and final_handoff == child_id
+    assert restarted.get(child_id, "scope").revision_number == 2
