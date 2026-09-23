@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.journal.store import ActionJournal
 from app.plans.service import PlanService
-from app.tools.registry import ToolAuthorization, ToolRegistry
+from app.tools.registry import ToolApproval, ToolAuthorization, ToolRegistry
 
 
 class PlanExecutionError(RuntimeError):
@@ -27,6 +27,7 @@ class PlanExecutionCoordinator:
         step_id: str,
         tool_name: str,
         authorization: ToolAuthorization,
+        approval: ToolApproval | None = None,
         arguments: dict[str, Any],
         verify: Callable[[Any], bool] | None = None,
         session_id: str | None = None,
@@ -44,6 +45,11 @@ class PlanExecutionCoordinator:
         tool = self._tools.get(tool_name)
         if not self._tools.validate_authorization(authorization, tool_name, scope, session_id):
             raise PlanExecutionError("tool permission denied")
+        if tool.high_impact and approval is None:
+            raise PlanExecutionError("tool approval required")
+        if approval is not None and not self._tools.consume_approval(approval, authorization, tool_name, scope, session_id, arguments):
+            raise PlanExecutionError("invalid tool approval")
+        approval_validated = tool.high_impact
         trace_id = str(uuid4())
         self._plans.transition(plan_id, step_id, "in_progress", scope, trace_id)
         try:
@@ -53,7 +59,7 @@ class PlanExecutionCoordinator:
         except Exception as exc:
             if self._journal is not None and session_id is not None:
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
-                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id},
+                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated},
                                      status="error", error="verification failed" if isinstance(exc, PlanExecutionError) else "tool execution failed")
             self._plans.transition(plan_id, step_id, "failed", scope, trace_id)
             if isinstance(exc, PlanExecutionError):
@@ -62,7 +68,7 @@ class PlanExecutionCoordinator:
         try:
             if self._journal is not None and session_id is not None:
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
-                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id},
+                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated},
                                      status="success", result_preview=str(result)[:1000])
             self._plans.transition(plan_id, step_id, "completed", scope, trace_id)
         except Exception as exc:

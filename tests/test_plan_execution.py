@@ -81,3 +81,19 @@ def test_declared_mutation_permission_is_required_and_verified(tmp_path: Path) -
     result = coordinator.execute_once(scope="a", plan_id=plan.id, step_id=plan.steps[0].id, tool_name="mutate", authorization=coordinator._tools.authorize("mutate", "a"), arguments={}, verify=lambda value: value == "changed")
     assert result["result"] == "changed"
     assert plans.get(plan.id, "a").steps[0].status == "completed"
+
+
+def test_high_impact_tool_requires_bound_one_time_approval(tmp_path: Path) -> None:
+    plans, plan, coordinator = setup_plan(tmp_path)
+    calls: list[str] = []
+    coordinator._tools.register(ToolDefinition(name="danger", description="danger", permission="plan_write", high_impact=True, handler=lambda value: calls.append(value) or "done"))
+    auth = coordinator._tools.authorize("danger", "a", "session-1")
+    with pytest.raises(PlanExecutionError, match="approval required"):
+        coordinator.execute_once(scope="a", plan_id=plan.id, step_id=plan.steps[0].id, tool_name="danger", authorization=auth, arguments={"value": "x"}, session_id="session-1")
+    approval = coordinator._tools.approve(auth, {"value": "x"})
+    result = coordinator.execute_once(scope="a", plan_id=plan.id, step_id=plan.steps[0].id, tool_name="danger", authorization=auth, approval=approval, arguments={"value": "x"}, session_id="session-1", verify=lambda value: value == "done")
+    assert result["result"] == "done"
+    assert calls == ["x"]
+    second = plans.create(PlanCreate(scope="a", goal="again", steps=[PlanStepCreate(title="one")]))
+    with pytest.raises(PlanExecutionError, match="invalid tool approval"):
+        coordinator.execute_once(scope="a", plan_id=second.id, step_id=second.steps[0].id, tool_name="danger", authorization=auth, approval=approval, arguments={"value": "x"}, session_id="session-1")
