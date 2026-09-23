@@ -66,10 +66,13 @@ class ProposalService:
         self._put(proposal)
         return proposal
 
-    def get(self, proposal_id: str) -> MemoryProposal | None:
+    def get(self, proposal_id: str, scope: str | None = None) -> MemoryProposal | None:
         with sqlite3.connect(self._database_path) as connection:
             connection.row_factory = sqlite3.Row
-            row = connection.execute("SELECT * FROM memory_proposals WHERE id = ?", (proposal_id,)).fetchone()
+            if scope is None:
+                row = connection.execute("SELECT * FROM memory_proposals WHERE id = ?", (proposal_id,)).fetchone()
+            else:
+                row = connection.execute("SELECT * FROM memory_proposals WHERE id = ? AND scope = ?", (proposal_id, scope)).fetchone()
         return self._row(row) if row else None
 
     def list(self, scope: str, status: ProposalStatus = "pending", limit: int = 50) -> list[MemoryProposal]:
@@ -80,11 +83,14 @@ class ProposalService:
             rows = connection.execute("SELECT * FROM memory_proposals WHERE scope = ? AND status = ? ORDER BY created_at, id LIMIT ?", (scope, status, limit)).fetchall()
         return [self._row(row) for row in rows]
 
-    def approve(self, proposal_id: str) -> MemoryProposal | None:
+    def approve(self, proposal_id: str, scope: str | None = None) -> MemoryProposal | None:
         with sqlite3.connect(self._database_path) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT * FROM memory_proposals WHERE id = ?", (proposal_id,)).fetchone()
+            if scope is None:
+                row = connection.execute("SELECT * FROM memory_proposals WHERE id = ?", (proposal_id,)).fetchone()
+            else:
+                row = connection.execute("SELECT * FROM memory_proposals WHERE id = ? AND scope = ?", (proposal_id, scope)).fetchone()
             if row is None or row["status"] == "rejected":
                 return None
             proposal = self._row(row)
@@ -100,8 +106,8 @@ class ProposalService:
             self._update_proposal(connection, approved)
             return approved
 
-    def reject(self, proposal_id: str) -> MemoryProposal | None:
-        proposal = self.get(proposal_id)
+    def reject(self, proposal_id: str, scope: str | None = None) -> MemoryProposal | None:
+        proposal = self.get(proposal_id, scope)
         if proposal is None or proposal.status != "pending":
             return None
         rejected = proposal.model_copy(update={"status": "rejected", "updated_at": datetime.now(UTC)})

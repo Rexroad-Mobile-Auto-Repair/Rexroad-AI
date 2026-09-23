@@ -192,24 +192,24 @@ async def list_memory_proposals(scope: str, status: str = "pending", limit: int 
 
 
 @app.get("/memory-proposals/{proposal_id}", response_model=MemoryProposal)
-async def get_memory_proposal(proposal_id: str) -> MemoryProposal:
-    proposal = proposal_service.get(proposal_id)
+async def get_memory_proposal(proposal_id: str, scope: str) -> MemoryProposal:
+    proposal = proposal_service.get(proposal_id, scope)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Memory proposal not found")
     return proposal
 
 
 @app.post("/memory-proposals/{proposal_id}/approve", response_model=MemoryProposal)
-async def approve_memory_proposal(proposal_id: str) -> MemoryProposal:
-    proposal = proposal_service.approve(proposal_id)
+async def approve_memory_proposal(proposal_id: str, scope: str) -> MemoryProposal:
+    proposal = proposal_service.approve(proposal_id, scope)
     if proposal is None:
         raise HTTPException(status_code=409, detail="Memory proposal cannot be approved")
     return proposal
 
 
 @app.post("/memory-proposals/{proposal_id}/reject", response_model=MemoryProposal)
-async def reject_memory_proposal(proposal_id: str) -> MemoryProposal:
-    proposal = proposal_service.reject(proposal_id)
+async def reject_memory_proposal(proposal_id: str, scope: str) -> MemoryProposal:
+    proposal = proposal_service.reject(proposal_id, scope)
     if proposal is None:
         raise HTTPException(status_code=409, detail="Memory proposal cannot be rejected")
     return proposal
