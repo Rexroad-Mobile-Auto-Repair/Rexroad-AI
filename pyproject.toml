@@ -11,6 +11,7 @@ dependencies = [
     "httpx>=0.28,<0.29",
     "openai>=3.17,<4",
     "anthropic>=1.7,<2",
+    "pypdf>=6.0,<7",
 ]
 
 [project.optional-dependencies]

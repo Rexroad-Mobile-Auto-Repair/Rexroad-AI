@@ -99,7 +99,7 @@ class KnowledgeService:
                     if len(file_chunks) > self._max_document_chunks:
                         skipped_files += 1
                         continue
-                except (OSError, UnicodeError):
+                except Exception:  # noqa: BLE001 - extractor boundary is fail-safe
                     skipped_files += 1
                     continue
                 indexed_files += 1
