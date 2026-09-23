@@ -22,6 +22,7 @@ from app.plans.execution import PlanExecutionCoordinator, PlanExecutionError
 from app.plans.models import PlanCreate, PlanStep, ProjectPlan, StepStatus
 from app.plans.service import PlanService
 from app.plans.specs import ExecutionSpec, ExecutionSpecService
+from app.plans.traces import ExecutionTrace, ExecutionTraceService
 from app.policy.factory import build_workspace_registry
 from app.policy.workspaces import WorkspaceInfo
 from app.providers.factory import build_provider_registry, get_default_model
@@ -72,6 +73,7 @@ tool_registry = build_tool_registry(
 execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan_service, tool_registry)
 execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
 plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal)
+execution_trace_service = ExecutionTraceService(action_journal)
 
 agent_service = AgentService(
     settings,
@@ -351,6 +353,14 @@ async def execute_execution_spec(spec_id: str, scope: str, approval_request_id: 
         return result
     except (PlanExecutionError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail="execution spec cannot be executed") from exc
+
+
+@app.get("/execution-traces/{trace_id}", response_model=ExecutionTrace)
+async def get_execution_trace(trace_id: str, scope: str) -> ExecutionTrace:
+    trace = execution_trace_service.get(trace_id, scope)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="Execution trace not found")
+    return trace
 
 
 @app.get("/plans", response_model=list[ProjectPlan])
