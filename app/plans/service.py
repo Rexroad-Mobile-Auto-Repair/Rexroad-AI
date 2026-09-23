@@ -35,6 +35,16 @@ class PlanService:
             self._insert(connection, plan)
         return plan
 
+    def create_with_connection(self, connection: sqlite3.Connection, request: PlanCreate) -> ProjectPlan:
+        if not request.steps:
+            raise ValueError("plan requires at least one step")
+        now = datetime.now(UTC)
+        plan = ProjectPlan(id=str(uuid4()), scope=request.scope, workspace=request.workspace, goal=request.goal,
+                           steps=[PlanStep(position=i, title=step.title, metadata=step.metadata) for i, step in enumerate(request.steps)],
+                           created_at=now, updated_at=now, metadata=request.metadata)
+        self._insert(connection, plan)
+        return plan
+
     def get(self, plan_id: str, scope: str | None = None) -> ProjectPlan | None:
         with sqlite3.connect(self._database_path) as connection:
             plan = self._read_plan(connection, plan_id, scope)

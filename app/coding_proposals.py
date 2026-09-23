@@ -137,9 +137,8 @@ class CodingProposalService:
                 raise ValueError("proposal specs are stale")
         now = datetime.now(UTC)
         updated = proposal.model_copy(update={"spec_review_status": "accepted", "spec_reviewed_at": now, "updated_at": now})
+        self.workflows.specs.mark_ready_many([*proposal.patch_spec_ids, *proposal.check_spec_ids], scope)
         with sqlite3.connect(self.path) as db:
-            db.execute("BEGIN IMMEDIATE")
-            for sid in [*proposal.patch_spec_ids, *proposal.check_spec_ids]: db.execute("UPDATE execution_specs SET status='ready', updated_at=? WHERE id=? AND scope=? AND status='draft'", (now.isoformat(), sid, scope))
             db.execute("UPDATE coding_proposals SET payload_json=? WHERE proposal_id=?", (updated.model_dump_json(), proposal_id))
         return updated
 
@@ -166,3 +165,7 @@ class CodingProposalService:
 
     def _save(self, item: CodingProposal) -> None:
         with sqlite3.connect(self.path) as db: db.execute("INSERT OR REPLACE INTO coding_proposals VALUES (?, ?)", (item.proposal_id, item.model_dump_json()))
+
+    @staticmethod
+    def save_with_connection(connection: sqlite3.Connection, item: CodingProposal) -> None:
+        connection.execute("INSERT OR REPLACE INTO coding_proposals VALUES (?, ?)", (item.proposal_id, item.model_dump_json()))

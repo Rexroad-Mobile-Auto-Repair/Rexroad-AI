@@ -56,6 +56,16 @@ class ExecutionSpecService:
             connection.execute("INSERT INTO execution_specs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (spec.id, spec.scope, spec.plan_id, spec.step_id, spec.tool_name, json.dumps(spec.arguments, sort_keys=True), json.dumps(spec.verification, sort_keys=True), spec.session_id, spec.status, spec.created_at, spec.updated_at))
         return spec
 
+    def create_with_connection(self, connection: sqlite3.Connection, *, scope: str, plan_id: str, step_id: str, tool_name: str, arguments: dict[str, Any], verification: dict[str, Any], session_id: str | None = None, validate_step: bool = True) -> ExecutionSpec:
+        if validate_step and self._actionable_step(scope, plan_id, step_id) is None:
+            raise ValueError("step is not actionable")
+        tool = self._tools.get(tool_name)
+        self._validate_arguments(tool.parameters, arguments)
+        now = datetime.now(UTC).isoformat()
+        spec = ExecutionSpec(str(uuid4()), scope, plan_id, step_id, tool_name, arguments, verification, session_id, "draft", now, now)
+        connection.execute("INSERT INTO execution_specs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (spec.id, spec.scope, spec.plan_id, spec.step_id, spec.tool_name, json.dumps(spec.arguments, sort_keys=True), json.dumps(spec.verification, sort_keys=True), spec.session_id, spec.status, spec.created_at, spec.updated_at))
+        return spec
+
     def get(self, spec_id: str, scope: str) -> ExecutionSpec | None:
         with sqlite3.connect(self._database_path) as connection:
             row = connection.execute("SELECT * FROM execution_specs WHERE id = ? AND scope = ?", (spec_id, scope)).fetchone()
@@ -80,6 +90,28 @@ class ExecutionSpecService:
         with sqlite3.connect(self._database_path) as connection:
             connection.execute("UPDATE execution_specs SET status = ?, updated_at = ? WHERE id = ? AND scope = ?", ("ready", now, spec_id, scope))
         return self.get(spec_id, scope)  # type: ignore[return-value]
+
+    def mark_ready_many(self, spec_ids: list[str], scope: str) -> list[ExecutionSpec]:
+        if not spec_ids or len(spec_ids) != len(set(spec_ids)):
+            raise ValueError("invalid spec set")
+        with sqlite3.connect(self._database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = []
+            for spec_id in spec_ids:
+                row = connection.execute("SELECT * FROM execution_specs WHERE id=? AND scope=?", (spec_id, scope)).fetchone()
+                if row is None or row[8] != "draft":
+                    raise ValueError("spec is not draft")
+                if self._actionable_step(scope, row[2], row[3]) is None:
+                    raise ValueError("spec is stale")
+                rows.append(row)
+            now = datetime.now(UTC).isoformat()
+            for spec_id in spec_ids:
+                connection.execute("UPDATE execution_specs SET status='ready', updated_at=? WHERE id=? AND scope=? AND status='draft'", (now, spec_id, scope))
+            updated = []
+            for spec_id in spec_ids:
+                row = connection.execute("SELECT * FROM execution_specs WHERE id=? AND scope=?", (spec_id, scope)).fetchone()
+                updated.append(self._from_row(row))
+            return updated
 
     def invalidate(self, spec_id: str, scope: str) -> ExecutionSpec:
         spec = self.get(spec_id, scope)
