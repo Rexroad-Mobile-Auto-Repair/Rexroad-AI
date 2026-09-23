@@ -29,6 +29,7 @@ from app.providers.status import ProviderStatus
 from app.tools.factory import build_tool_registry
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
+from app.tools.output_policy import sanitize_output
 from app.tools.registry import ToolApprovalRequest
 
 app = FastAPI(
@@ -345,7 +346,9 @@ async def execute_execution_spec(spec_id: str, scope: str, approval_request_id: 
         persisted = execution_spec_service.get(spec_id, scope)
         if persisted is None:
             raise PlanExecutionError("execution spec not found")
-        return plan_execution.execute_once(scope=scope, plan_id=persisted.plan_id, step_id=persisted.step_id, tool_name=runtime.tool_name, authorization=runtime.authorization, approval=runtime.approval, arguments=runtime.arguments, verification_policy=runtime.verification_policy, session_id=runtime.session_id)
+        result = plan_execution.execute_once(scope=scope, plan_id=persisted.plan_id, step_id=persisted.step_id, tool_name=runtime.tool_name, authorization=runtime.authorization, approval=runtime.approval, arguments=runtime.arguments, verification_policy=runtime.verification_policy, session_id=runtime.session_id)
+        result["result"] = sanitize_output(result["result"])
+        return result
     except (PlanExecutionError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail="execution spec cannot be executed") from exc
 

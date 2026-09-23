@@ -7,6 +7,7 @@ from uuid import uuid4
 from app.journal.store import ActionJournal
 from app.plans.service import PlanService
 from app.plans.verification import VerificationPolicy
+from app.tools.output_policy import sanitize_output
 from app.tools.registry import ToolApproval, ToolAuthorization, ToolRegistry
 
 
@@ -86,7 +87,7 @@ class PlanExecutionCoordinator:
             if self._journal is not None and session_id is not None:
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
                                      permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason},
-                                     status="success", result_preview=str(result)[:1000])
+                                     status="success", result_preview=str(sanitize_output(result))[:1000])
             self._plans.transition(plan_id, step_id, "completed", scope, trace_id)
         except Exception as exc:
             self._plans.transition(plan_id, step_id, "failed", scope, trace_id)
