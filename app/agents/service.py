@@ -45,6 +45,7 @@ class AgentService:
         journal: ActionJournal | None = None,
         max_tool_rounds: int = 8,
         context_builder: ContextBuilder | None = None,
+        allow_tools_without_workspace: bool = True,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -52,6 +53,7 @@ class AgentService:
         self._journal = journal
         self._max_tool_rounds = max_tool_rounds
         self._context_builder = context_builder or ContextBuilder()
+        self._allow_tools_without_workspace = allow_tools_without_workspace
 
     async def query(self, request: AgentQueryRequest) -> AgentQueryResponse:
         provider_name = request.provider or self._settings.default_provider
@@ -78,13 +80,13 @@ class AgentService:
             ),
             ModelMessage(
                 role="user",
-                content=request.message,
+                content=(f"Selected workspace context: {request.workspace}.\n" if request.workspace else "") + request.message,
             ),
         ]
 
         tool_specs = (
             self._tools.specs()
-            if self._tools is not None
+            if self._tools is not None and (request.workspace or self._allow_tools_without_workspace)
             else []
         )
 

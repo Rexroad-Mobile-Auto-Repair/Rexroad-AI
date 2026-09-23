@@ -40,7 +40,7 @@ from app.plans.service import PlanService
 from app.plans.specs import ExecutionSpec, ExecutionSpecService
 from app.plans.traces import ExecutionTrace, ExecutionTraceService
 from app.policy.factory import build_workspace_registry
-from app.policy.workspaces import WorkspaceInfo
+from app.policy.workspaces import WorkspaceAccessError, WorkspaceInfo
 from app.project_briefing import ProjectBriefing, ProjectBriefingService
 from app.project_history import (
     ProjectChangeBriefing,
@@ -111,6 +111,12 @@ async function runAction(action){if(!selected)return;const body={action,scope:$(
 $('refresh').onclick=load;$('workspace').onchange=load;$('create').onclick=async()=>{try{const objective=$('objective').value.trim();if(!objective)throw new Error('Objective required');const d=await api('/supervisor-workflows/coding',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scope:$('scope').value.trim(),workspace:$('workspace').value,instruction:objective})});selected=d.workflow_id;$('objective').value='';await load();await selectJob(selected);}catch(e){$('error').textContent=e.message;}};loadWorkspaces();
 </script></main></body></html>"""
 
+CHAT_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rexroad AI Chat</title><style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:#10151c;color:#e8eef5}main{height:100vh;display:grid;grid-template-columns:250px 1fr}.side{padding:1rem;background:#18212b;border-right:1px solid #2b3a49;overflow:auto}.brand{font-size:1.25rem;font-weight:700;margin-bottom:1rem}button,select,textarea{font:inherit;border:1px solid #52677a;border-radius:7px;background:#101820;color:inherit;padding:.6rem}button{cursor:pointer;background:#245b87}button:hover{background:#2e73a8}.side button{width:100%;margin-bottom:.6rem}.side a{color:#9fd0f3;display:block;margin:.6rem 0}.session{padding:.55rem;border-radius:6px;cursor:pointer;margin:.3rem 0}.session:hover{background:#263747}.chat{display:flex;flex-direction:column;min-width:0}.messages{flex:1;overflow:auto;padding:2rem max(1rem,calc((100% - 800px)/2))}.msg{padding:.8rem 1rem;border-radius:10px;margin:.8rem 0;white-space:pre-wrap;overflow-wrap:anywhere}.user{background:#245b87;margin-left:15%}.assistant{background:#1c2833;margin-right:15%}.composer{padding:1rem max(1rem,calc((100% - 800px)/2));border-top:1px solid #2b3a49;display:flex;gap:.6rem}.composer textarea{flex:1;min-height:48px;resize:vertical}.status{color:#a8b5c2;min-height:1.4rem;font-size:.9rem}.context{width:100%;margin-bottom:.6rem}.error{color:#ff9696}@media(max-width:700px){main{grid-template-columns:1fr}.side{height:auto;border-right:0;border-bottom:1px solid #2b3a49}.messages{padding:1rem}.user,.assistant{margin-left:0;margin-right:0}}
+</style></head><body><main><aside class="side"><div class="brand">Rexroad AI</div><button id="new">New Chat</button><label class="context">Project context<select id="workspace"><option value="">None</option></select></label><a href="/operator">Advanced / Operator</a><div id="sessions" class="status">Recent conversations</div></aside><section class="chat"><div id="messages" class="messages"><div class="msg assistant">Hello. I’m Rexroad AI. How can I help?</div></div><div id="status" class="status"></div><form id="form" class="composer"><textarea id="input" placeholder="Message Rexroad AI..." aria-label="Message"></textarea><button id="send" type="submit">Send</button></form></section></main><script>
+const $=id=>document.getElementById(id),messages=$('messages');let busy=false;function safe(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}function add(role,text){const n=document.createElement('div');n.className='msg '+role;n.textContent=text;messages.appendChild(n);messages.scrollTop=messages.scrollHeight;}async function api(url,opt){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail||'Request failed');return d;}async function load(){try{const [ws,ss]=await Promise.all([api('/workspaces'),api('/sessions?limit=20')]);$('workspace').innerHTML='<option value="">None</option>'+ws.filter(x=>x.available).map(x=>`<option value="${safe(x.name)}">${safe(x.name)}</option>`).join('');$('sessions').innerHTML=ss.length?ss.map(x=>`<div class="session" data-session="${safe(x.session_id)}">${safe(x.session_id.slice(0,8))} · ${safe(x.action_count)} messages</div>`).join(''):'<span class="status">No conversations yet.</span>';document.querySelectorAll('[data-session]').forEach(x=>x.onclick=()=>openSession(x.dataset.session));}catch(e){$('status').textContent=e.message;}}async function openSession(id){try{const d=await api('/sessions/'+encodeURIComponent(id));messages.innerHTML='';d.actions.filter(x=>x.tool==='').forEach(x=>add(x.status==='success'?'assistant':'assistant',x.result_preview||x.error||''));if(!messages.children.length)add('assistant','Conversation history has no displayable messages.');}catch(e){$('status').textContent=e.message;}}$('new').onclick=()=>{messages.innerHTML='<div class="msg assistant">New conversation started. How can I help?</div>';$('input').focus();};$('form').onsubmit=async e=>{e.preventDefault();if(busy)return;const text=$('input').value.trim();if(!text)return;busy=true;$('send').disabled=true;$('status').textContent='Thinking...';add('user',text);$('input').value='';try{const d=await api('/agent/query',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,workspace:$('workspace').value||null})});add('assistant',d.content||'');$('status').textContent='';load();}catch(e){$('status').textContent=e.message;}finally{busy=false;$('send').disabled=false;}};$('input').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('form').requestSubmit();}};load();
+</script></body></html>"""
+
 settings = Settings()
 
 provider_registry = build_provider_registry(settings)
@@ -165,6 +171,7 @@ agent_service = AgentService(
     provider_registry,
     tools=tool_registry,
     journal=action_journal,
+    allow_tools_without_workspace=False,
 )
 diagnostics = build_local_diagnostics(settings)
 
@@ -181,6 +188,11 @@ async def health() -> dict[str, str]:
 @app.get("/operator", response_class=HTMLResponse)
 async def operator_page() -> HTMLResponse:
     return HTMLResponse(OPERATOR_HTML)
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page() -> HTMLResponse:
+    return HTMLResponse(CHAT_HTML)
 
 
 @app.get("/supervisor/dashboard", response_model=SupervisorProjectDashboard)
@@ -243,6 +255,13 @@ async def session_detail(
         summary=summary,
         actions=action_journal.list_session(session_id),
     )
+
+
+@app.get("/sessions/{session_id}/events")
+async def session_events(session_id: str):
+    if action_journal.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return action_journal.list_events_for_session(session_id)
 
 @app.get("/journal")
 async def journal(
@@ -354,6 +373,11 @@ async def search_across_workspaces(workspaces: list[str], query: str, limit: int
 async def agent_query(
     request: AgentQueryRequest,
 ) -> AgentQueryResponse:
+    if request.workspace is not None:
+        try:
+            workspace_registry.get_root(request.workspace)
+        except WorkspaceAccessError:
+            raise HTTPException(status_code=404, detail="Workspace not found") from None
     return await agent_service.query(request)
 
 
