@@ -17,6 +17,8 @@ from app.memory.models import MemoryCreate, MemoryRecord, MemoryUpdate
 from app.memory.proposals import MemoryProposal, MemoryProposalCreate, ProposalService
 from app.memory.service import MemoryService
 from app.memory.store import MemoryStore
+from app.plans.bridge import TrustedExecutionBridge
+from app.plans.execution import PlanExecutionCoordinator, PlanExecutionError
 from app.plans.models import PlanCreate, PlanStep, ProjectPlan, StepStatus
 from app.plans.service import PlanService
 from app.plans.specs import ExecutionSpec, ExecutionSpecService
@@ -67,6 +69,8 @@ tool_registry = build_tool_registry(
     settings.action_journal_path, cross_workspace=cross_workspace_service,
 )
 execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan_service, tool_registry)
+execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
+plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal)
 
 agent_service = AgentService(
     settings,
@@ -332,6 +336,18 @@ async def invalidate_execution_spec(spec_id: str, scope: str) -> ExecutionSpec:
         return execution_spec_service.invalidate(spec_id, scope)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Execution spec not found") from exc
+
+
+@app.post("/execution-specs/{spec_id}/execute")
+async def execute_execution_spec(spec_id: str, scope: str, approval_request_id: str | None = None) -> dict:
+    try:
+        runtime, _, _ = execution_bridge.prepare(scope=scope, spec_id=spec_id, approval_request_id=approval_request_id)
+        persisted = execution_spec_service.get(spec_id, scope)
+        if persisted is None:
+            raise PlanExecutionError("execution spec not found")
+        return plan_execution.execute_once(scope=scope, plan_id=persisted.plan_id, step_id=persisted.step_id, tool_name=runtime.tool_name, authorization=runtime.authorization, approval=runtime.approval, arguments=runtime.arguments, verification_policy=runtime.verification_policy, session_id=runtime.session_id)
+    except (PlanExecutionError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="execution spec cannot be executed") from exc
 
 
 @app.get("/plans", response_model=list[ProjectPlan])
