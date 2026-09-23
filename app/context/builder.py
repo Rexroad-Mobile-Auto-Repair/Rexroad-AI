@@ -144,6 +144,16 @@ class ContextBuilder:
                 truncated=bounded_content != evidence.content,
             ))
 
+        supplemental = []
+        supplemental_bytes = 0
+        for contribution in sorted(request.supplemental_worker_context, key=lambda item: str(getattr(item, "task_id", ""))):
+            summary = self._prefix_by_bytes(str(getattr(contribution, "summary", "")), request.supplemental_context_byte_budget)
+            section = f"--- supplemental worker analysis ({getattr(contribution, 'task_id', 'unknown')}) ---\n{summary}"
+            section = self._prefix_by_bytes(section, request.supplemental_context_byte_budget)
+            candidate = self._message_bytes(ModelMessage(role="user", content="Supplemental worker analysis:\n" + "\n".join([*supplemental, section])))
+            supplemental.append(section)
+            supplemental_bytes = candidate if candidate <= request.total_byte_budget else 0
+
         return ContextResult(
             messages=[
                 *messages,
@@ -152,9 +162,10 @@ class ContextBuilder:
                     if evidence_sections
                     else []
                 ),
+                *([ModelMessage(role="user", content="Supplemental worker analysis:\n" + "\n".join(supplemental))] if supplemental else []),
             ],
-            byte_count=required_byte_count + evidence_bytes,
-            message_count=len(messages) + (1 if evidence_sections else 0),
+            byte_count=required_byte_count + evidence_bytes + supplemental_bytes,
+            message_count=len(messages) + (1 if evidence_sections else 0) + (1 if supplemental else 0),
             truncations=truncations,
             evidence_decisions=evidence_decisions,
         )

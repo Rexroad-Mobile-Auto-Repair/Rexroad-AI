@@ -22,6 +22,7 @@ class ResearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
     provider: ProviderName | None = None
     model: str | None = None
+    contribution_ids: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("query")
     @classmethod

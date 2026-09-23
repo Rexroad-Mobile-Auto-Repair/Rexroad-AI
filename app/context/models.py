@@ -58,6 +58,8 @@ class ContextRequest(BaseModel):
     max_evidence_items: int = Field(default=8, gt=0)
     total_evidence_byte_budget: int = Field(default=24576, gt=0)
     evidence_content_byte_budget: int = Field(default=8192, gt=0)
+    supplemental_worker_context: list[object] = Field(default_factory=list, max_length=4)
+    supplemental_context_byte_budget: int = Field(default=8192, gt=0)
 
 
 class ContextTruncation(BaseModel):
