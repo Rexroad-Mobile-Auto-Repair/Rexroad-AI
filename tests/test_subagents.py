@@ -97,6 +97,10 @@ async def test_dispatch_requires_matching_one_time_authorization(tmp_path):
     assert audit.recommended_profile == "researcher"
     assert audit.instruction_fingerprint == authorization.fingerprint
     assert authorization.token not in audit.model_dump_json()
+    service.record_tool_usage(audit.dispatch_id, "s", "knowledge.search", "read", "success", {"token": "secret", "ok": True})
+    refreshed = service.audit(audit.dispatch_id, "s")
+    assert refreshed.tool_usage[0]["sequence"] == 1
+    assert "secret" not in refreshed.model_dump_json()
 
 
 def test_dispatch_rejects_wrong_profile_scope_and_instruction(tmp_path):
