@@ -105,7 +105,7 @@ def test_execute_registered_tool() -> None:
     ) == "read:hello"
 
 
-def test_build_tool_registry_contains_only_read_tools(
+def test_build_tool_registry_contains_expected_tools(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "repo"
@@ -126,6 +126,7 @@ def test_build_tool_registry_contains_only_read_tools(
     )
 
     assert registry.names() == [
+        "filesystem.apply_patch",
         "filesystem.list",
         "filesystem.read",
         "filesystem.search",
@@ -136,7 +137,9 @@ def test_build_tool_registry_contains_only_read_tools(
         "git.status",
     ]
 
+    assert registry.get("filesystem.apply_patch").permission == "filesystem_write"
     assert all(
         tool.permission == "read"
         for tool in registry.definitions()
+        if tool.name != "filesystem.apply_patch"
     )

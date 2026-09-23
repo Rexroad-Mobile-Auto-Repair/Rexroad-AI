@@ -47,6 +47,27 @@ def build_tool_registry(
 
     registry.register(
         ToolDefinition(
+            name="filesystem.apply_patch",
+            description="Apply one exact-match replacement inside an approved workspace.",
+            permission="filesystem_write",
+            high_impact=True,
+            handler=filesystem.apply_patch,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "workspace": {"type": "string"},
+                    "relative_path": {"type": "string"},
+                    "expected_text": {"type": "string", "maxLength": 64000},
+                    "replacement": {"type": "string", "maxLength": 64000},
+                },
+                "required": ["workspace", "relative_path", "expected_text", "replacement"],
+                "additionalProperties": False,
+            },
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
             name="filesystem.read",
             description="Read a text file inside an approved workspace.",
             permission="read",

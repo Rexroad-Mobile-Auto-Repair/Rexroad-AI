@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from app.tools.models import ToolSpec
 
-ToolPermission = Literal["read", "propose", "plan_create", "plan_write"]
+ToolPermission = Literal["read", "propose", "plan_create", "plan_write", "filesystem_write"]
 
 @dataclass(frozen=True)
 class ToolAuthorization:
