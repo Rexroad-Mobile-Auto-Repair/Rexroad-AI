@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
@@ -86,6 +87,30 @@ app = FastAPI(
     version="0.1.0",
 )
 
+OPERATOR_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rexroad AI Operator</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#10151c;color:#e8eef5}main{max-width:1100px;margin:auto;padding:1rem}header,.toolbar,.card{background:#18212b;border:1px solid #2b3a49;border-radius:10px;padding:1rem;margin-bottom:1rem}h1,h2{margin:.1rem 0 .75rem}label{display:flex;gap:.5rem;align-items:center}select,input,button{font:inherit;border-radius:6px;border:1px solid #52677a;padding:.55rem;background:#101820;color:inherit}button{cursor:pointer;background:#245b87}button:hover{background:#2e73a8}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem}.attention{border-left:4px solid #e0a642;padding:.6rem;margin:.45rem 0;background:#202b35}.blocked_failure{border-color:#d65c5c}.review_required{border-color:#65a9d6}.action_ready{border-color:#63bb83}.muted{color:#a8b5c2}.error{color:#ff9696;min-height:1.4rem}.files{font-family:monospace;white-space:pre-wrap}.warning{border:1px solid #d19a36;padding:.7rem;border-radius:6px}
+</style></head><body><main>
+<header><h1>Rexroad AI</h1><p class="muted">Explicit supervisor control panel. Every action requires a separate click.</p></header>
+<section class="toolbar"><label>Workspace <select id="workspace"></select></label><label>Scope <input id="scope" value="operator" maxlength="200"></label><button id="refresh">Refresh</button><span id="error" class="error"></span></section>
+<section class="grid"><div class="card"><h2>Project</h2><div id="project" class="muted">Select a workspace.</div></div><div class="card"><h2>Needs Attention</h2><div id="attention" class="muted">None.</div></div></section>
+<section class="card"><h2>New supervised coding task</h2><input id="objective" maxlength="4000" size="60" placeholder="Describe the coding objective"><button id="create">Create coding workflow</button></section>
+<section class="card"><h2>Coding Jobs</h2><div id="jobs" class="muted">None.</div></section>
+<section class="card"><h2>Recent Activity</h2><div id="activity" class="muted">None.</div></section>
+<script>
+const $=id=>document.getElementById(id); let selected=null;
+function safe(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
+async function api(url,options){const r=await fetch(url,options);let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||'Request failed');return d;}
+async function loadWorkspaces(){const ws=await api('/workspaces');$('workspace').innerHTML=ws.map(x=>`<option value="${safe(x.name)}">${safe(x.name)}</option>`).join('');if(ws.length)load();}
+function params(){return new URLSearchParams({scope:$('scope').value.trim(),workspace:$('workspace').value});}
+async function load(){if(!$('workspace').value)return;try{const p=params(),d=await api('/supervisor/dashboard?'+p);$('project').innerHTML=`<b>${safe(d.project.workspace)}</b> · ${safe(d.project.branch||'no Git branch')} · ${d.project.clean===true?'clean':'dirty/unavailable'}<br>HEAD ${safe(d.project.head||'unavailable')}`;$('attention').innerHTML=d.attention.length?d.attention.map(x=>`<div class="attention ${safe(x.category)}"><b>${safe(x.category)}</b> · ${safe(x.headline)}<br>${safe(x.reason)}<br><span class="muted">${safe(x.next_action||'No action')}</span></div>`).join(''):'<span class="muted">Nothing requires attention.</span>';$('jobs').innerHTML=d.coding.length?d.coding.map(x=>`<div class="attention"><b>${safe(x.workflow_id)}</b> · ${safe(x.status)}<br>${safe(x.guidance_headline)}<br>${safe(x.blocking_reason||'')}<br><span class="files">${x.affected_resources.map(safe).join('\n')}</span><br><button data-job="${safe(x.workflow_id)}">Open guidance</button></div>`).join(''):'<span class="muted">No coding jobs.</span>';$('activity').innerHTML=d.recent_activity.length?d.recent_activity.map(x=>`<div>${safe(x.timestamp)} · ${safe(x.summary)} · ${safe(x.trace_id||'')}</div>`).join(''):'<span class="muted">No recent activity.</span>';document.querySelectorAll('[data-job]').forEach(b=>b.onclick=()=>selectJob(b.dataset.job));$('error').textContent='';}catch(e){$('error').textContent=e.message;}}
+async function selectJob(id){selected=id;try{const p=params(),j=await api(`/supervisor-coding-workflows/${encodeURIComponent(id)}/job?${p}`),g=await api(`/supervisor-coding-workflows/${encodeURIComponent(id)}/guidance?${p}`);$('jobs').innerHTML=`<div class="attention"><h3>${safe(j.workflow_id)} · ${safe(j.status)}</h3><p>${safe(g.headline)}</p><p>${safe(g.explanation)}</p>${g.high_impact?`<div class="warning">This action modifies ${g.affected_resources.length} workspace file(s). Checks will not run automatically; Git will not be committed or pushed; retries will not occur automatically.</div>`:''}<div class="files">${g.affected_resources.map(safe).join('\n')}</div><p class="muted">Will do: ${g.will_do.map(safe).join('; ')}</p><p class="muted">Will not do: ${g.will_not_do.map(safe).join('; ')}</p><button id="action" data-action="${safe(g.next_action)}">${safe(g.next_action)}</button></div>`;$('action').onclick=()=>runAction(g.next_action);}catch(e){$('error').textContent=e.message;}}
+async function runAction(action){if(!selected)return;const body={action,scope:$('scope').value.trim()};if(action.startsWith('review_'))body.decision=confirm('Accept this explicit review?')?'accept':'reject';if(action==='request_revision')body.note=prompt('Bounded revision note:')||'';try{await api(`/supervisor-coding-workflows/${encodeURIComponent(selected)}/action`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});await load();await selectJob(selected);}catch(e){$('error').textContent=e.message;await load();}}
+$('refresh').onclick=load;$('workspace').onchange=load;$('create').onclick=async()=>{try{const objective=$('objective').value.trim();if(!objective)throw new Error('Objective required');const d=await api('/supervisor-workflows/coding',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scope:$('scope').value.trim(),workspace:$('workspace').value,instruction:objective})});selected=d.workflow_id;$('objective').value='';await load();await selectJob(selected);}catch(e){$('error').textContent=e.message;}};loadWorkspaces();
+</script></main></body></html>"""
+
 settings = Settings()
 
 provider_registry = build_provider_registry(settings)
@@ -151,6 +176,11 @@ async def health() -> dict[str, str]:
         "service": "rexroad-ai",
         "version": "0.1.0",
     }
+
+
+@app.get("/operator", response_class=HTMLResponse)
+async def operator_page() -> HTMLResponse:
+    return HTMLResponse(OPERATOR_HTML)
 
 
 @app.get("/supervisor/dashboard", response_model=SupervisorProjectDashboard)

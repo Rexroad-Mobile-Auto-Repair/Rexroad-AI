@@ -93,3 +93,24 @@ def test_dashboard_api_requires_explicit_scope_and_workspace(monkeypatch):
     client = TestClient(main.app)
     assert client.get("/supervisor/dashboard", params={"scope": "scope", "workspace": "a"}).status_code == 200
     assert client.get("/supervisor/dashboard", params={"scope": "wrong", "workspace": "a"}).status_code == 404
+
+
+def test_operator_page_is_human_surface_without_capabilities_or_patch_payloads():
+    client = TestClient(main.app)
+    response = client.get("/operator")
+    assert response.status_code == 200
+    assert "Rexroad AI" in response.text
+    assert "Create coding workflow" in response.text
+    assert "ToolAuthorization" not in response.text
+    assert "ToolApproval" not in response.text
+    assert "expected_text" not in response.text
+    assert "replacement" not in response.text
+    assert "api('/supervisor/dashboard?" in response.text
+
+
+def test_operator_page_has_no_load_time_mutation_endpoint():
+    client = TestClient(main.app)
+    page = client.get("/operator").text
+    assert "method:'POST'" in page
+    assert "$('create').onclick" in page
+    assert "runAction(g.next_action)" in page
