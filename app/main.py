@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
+from app.coding_proposals import CodingProposal, CodingProposalService, ProposalCreate
 from app.coding_workflows import (
     CheckAction,
     CodingWorkflow,
@@ -118,6 +119,7 @@ project_briefing_service = ProjectBriefingService(project_state_service, provide
 project_history_service = ProjectStateHistoryService(project_state_service, ProjectSnapshotStore(settings.action_journal_path))
 sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry, WorkerModelRouter(settings, provider_registry))
 coding_workflow_service = CodingWorkflowService(settings.action_journal_path, workspace_registry, git, sub_agent_service, plan_service, execution_spec_service, execution_bridge, plan_execution, tool_registry)
+coding_proposal_service = CodingProposalService(settings.action_journal_path, coding_workflow_service, workspace_registry, git)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 supervisor_policy = SupervisorPolicy()
 
@@ -759,5 +761,36 @@ async def cancel_coding_workflow(workflow_id: str, scope: str, reason: str | Non
         return coding_workflow_service.cancel(workflow_id, scope, reason)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Coding workflow not found") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal", response_model=CodingProposal)
+async def create_coding_proposal(workflow_id: str, scope: str, request: ProposalCreate) -> CodingProposal:
+    try:
+        return coding_proposal_service.create(workflow_id, scope, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Proposal unavailable") from exc
+
+
+@app.get("/supervisor-coding-workflows/{workflow_id}/proposal", response_model=CodingProposal)
+async def get_coding_proposal(workflow_id: str, scope: str) -> CodingProposal:
+    item = coding_proposal_service.get(workflow_id, scope)
+    if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
+    return item
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal/accept", response_model=CodingProposal)
+async def accept_coding_proposal(workflow_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
+    item = coding_proposal_service.get(workflow_id, scope)
+    if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
+    try: return coding_proposal_service.review(item.proposal_id, scope, "accepted", reviewer_session_id)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal review unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal/reject", response_model=CodingProposal)
+async def reject_coding_proposal(workflow_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
+    item = coding_proposal_service.get(workflow_id, scope)
+    if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
+    try: return coding_proposal_service.review(item.proposal_id, scope, "rejected", reviewer_session_id)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal review unavailable") from exc
 
 
