@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 class KnowledgeChunk(BaseModel):
     chunk_id: str
     content: str
-    source_type: Literal["source_code"] = "source_code"
+    source_type: Literal["source_code", "markdown", "text", "json", "yaml"] = "source_code"
     workspace: str
     file_path: str
     language: str

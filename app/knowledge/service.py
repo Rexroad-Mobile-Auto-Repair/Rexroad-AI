@@ -19,7 +19,15 @@ from app.knowledge.models import (
 from app.knowledge.store import KnowledgeStore
 from app.policy.workspaces import WorkspaceRegistry
 
-SOURCE_EXTENSIONS = {".py": "python"}
+SOURCE_EXTENSIONS = {
+    ".py": ("python", "source_code"),
+    ".md": ("markdown", "markdown"),
+    ".markdown": ("markdown", "markdown"),
+    ".txt": ("text", "text"),
+    ".json": ("json", "json"),
+    ".yaml": ("yaml", "yaml"),
+    ".yml": ("yaml", "yaml"),
+}
 IGNORED_DIRECTORIES = {
     ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv",
     "__pycache__", "build", "dist", "node_modules", "venv",
@@ -63,18 +71,22 @@ class KnowledgeService:
                 continue
             if self._is_ignored(path, root) or not path.is_file():
                 continue
-            language = SOURCE_EXTENSIONS.get(path.suffix.casefold())
-            if language is None:
+            source_info = SOURCE_EXTENSIONS.get(path.suffix.casefold())
+            if source_info is None:
                 continue
+            language, source_type = source_info
             try:
                 content = path.read_text(encoding="utf-8")
                 if "\x00" in content:
                     skipped_files += 1
                     continue
-                file_chunks = self._python_chunks(
-                    workspace, root, path, content, git_commit_sha
-                )
-            except (OSError, UnicodeError, SyntaxError):
+                if source_type == "source_code":
+                    file_chunks = self._python_chunks(workspace, root, path, content, git_commit_sha)
+                else:
+                    if source_type == "json":
+                        json.loads(content)
+                    file_chunks = self._text_chunks(workspace, root, path, content, language, source_type, git_commit_sha)
+            except (OSError, UnicodeError, SyntaxError, json.JSONDecodeError):
                 skipped_files += 1
                 continue
             indexed_files += 1
@@ -253,6 +265,50 @@ class KnowledgeService:
                 line_end=chunk_end, symbol_name=name, symbol_type=kind, parent_symbol=parent,
                 content_hash=content_hash, git_commit_sha=git_commit_sha, indexed_at=datetime.now(UTC),
             ))
+        return chunks
+
+    def _text_chunks(
+        self, workspace: str, root: Path, path: Path, content: str,
+        language: str, source_type: str, git_commit_sha: str | None,
+    ) -> list[KnowledgeChunk]:
+        lines = content.splitlines(keepends=True)
+        if not lines:
+            return []
+        sections: list[tuple[int, int, str | None]] = []
+        if source_type == "markdown":
+            starts = [(index, line.lstrip()[len(line.lstrip()) - len(line.lstrip("#")):].strip() or None)
+                      for index, line in enumerate(lines, 1) if line.lstrip().startswith("#")]
+            boundaries = [start for start, _ in starts]
+            for position, start in enumerate(boundaries):
+                end = boundaries[position + 1] - 1 if position + 1 < len(boundaries) else len(lines)
+                sections.append((start, end, next(title for line_no, title in starts if line_no == start)))
+            if not sections:
+                sections = [(1, len(lines), None)]
+        elif source_type == "text":
+            start = 1
+            for index, line in enumerate(lines, 1):
+                if not line.strip() and start < index:
+                    sections.append((start, index - 1, None))
+                    start = index + 1
+            if start <= len(lines):
+                sections.append((start, len(lines), None))
+        else:
+            sections = [(1, len(lines), None)]
+        chunks: list[KnowledgeChunk] = []
+        for start, end, heading in sections:
+            for offset in range(start, end + 1, MAX_STRUCTURAL_LINES):
+                chunk_end = min(end, offset + MAX_STRUCTURAL_LINES - 1)
+                chunk_content = "".join(lines[offset - 1:chunk_end])
+                content_hash = hashlib.sha256(chunk_content.encode("utf-8")).hexdigest()
+                file_path = path.relative_to(root).as_posix()
+                identity = "\n".join((workspace, file_path, str(offset), str(chunk_end), content_hash))
+                chunks.append(KnowledgeChunk(
+                    chunk_id=hashlib.sha256(identity.encode("utf-8")).hexdigest(), content=chunk_content,
+                    source_type=source_type, workspace=workspace, file_path=file_path, language=language,
+                    line_start=offset, line_end=chunk_end, content_hash=content_hash,
+                    git_commit_sha=git_commit_sha, indexed_at=datetime.now(UTC),
+                    metadata={"heading": heading} if heading else {},
+                ))
         return chunks
 
     def _freshness(self, chunk: KnowledgeChunk) -> str:
