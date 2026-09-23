@@ -25,6 +25,14 @@ class ProjectStateComparison(BaseModel):
     changes: dict[str, object]
 
 
+class ProjectChangeBriefing(BaseModel):
+    workspace: str
+    scope: str
+    status: str
+    summary: str
+    context: str
+
+
 class ProjectSnapshotStore:
     def __init__(self, database_path: str | Path) -> None:
         self._path = Path(database_path)
@@ -78,3 +86,11 @@ class ProjectStateHistoryService:
         for key in ("active_plans", "next_steps", "unresolved_tasks", "recent_traces"):
             if getattr(a, key) != getattr(b, key): changes[key] = {"from": getattr(a, key), "to": getattr(b, key)}
         return ProjectStateComparison(from_snapshot=left.id, to_snapshot=right.id, changes=changes)
+
+    def change_briefing(self, comparison: ProjectStateComparison, workspace: str, scope: str) -> ProjectChangeBriefing:
+        if not comparison.changes:
+            text = "No recorded project-state changes between the selected snapshots."
+        else:
+            labels = {"git": "Git changes", "changed_files": "Changed files", "active_plans": "Plan changes", "next_steps": "Next-step changes", "unresolved_tasks": "Task-memory changes", "recent_traces": "Execution-trace changes"}
+            text = "\n".join(f"{labels.get(key, key)}: recorded change" for key in sorted(comparison.changes))
+        return ProjectChangeBriefing(workspace=workspace, scope=scope, status="fallback", summary=text, context=text)

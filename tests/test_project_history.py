@@ -12,3 +12,12 @@ def test_snapshot_persists_and_compares(tmp_path):
     second = store.create(changed)
     comparison = ProjectStateHistoryService(None, store).compare(first, second)
     assert "git" in comparison.changes
+
+
+def test_change_briefing_is_deterministic_for_no_change(tmp_path):
+    state = ProjectState(workspace="w", scope="s", available=True, branch=None, head=None, clean=None, changed_files=[], active_plans=[], next_steps=[], unresolved_tasks=[], recent_traces=[], observed_at="2026-01-01T00:00:00Z")
+    store = ProjectSnapshotStore(tmp_path / "x.sqlite3")
+    first = store.create(state)
+    second = first.model_copy(update={"id": "two"})
+    result = ProjectStateHistoryService(None, store).change_briefing(ProjectStateHistoryService(None, store).compare(first, second), "w", "s")
+    assert "No recorded" in result.summary

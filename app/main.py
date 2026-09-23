@@ -27,6 +27,7 @@ from app.policy.factory import build_workspace_registry
 from app.policy.workspaces import WorkspaceInfo
 from app.project_briefing import ProjectBriefing, ProjectBriefingService
 from app.project_history import (
+    ProjectChangeBriefing,
     ProjectSnapshot,
     ProjectSnapshotStore,
     ProjectStateComparison,
@@ -415,6 +416,15 @@ async def compare_project_snapshots(from_id: str, to_id: str, workspace: str, sc
     if left is None or right is None:
         raise HTTPException(status_code=404, detail="Snapshot not found")
     return project_history_service.compare(left, right)
+
+
+@app.get("/project-state/change-briefing", response_model=ProjectChangeBriefing)
+async def project_change_briefing(workspace: str, scope: str, from_id: str, to_id: str) -> ProjectChangeBriefing:
+    left = project_history_service.get(from_id, workspace, scope)
+    right = project_history_service.get(to_id, workspace, scope)
+    if left is None or right is None:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return project_history_service.change_briefing(project_history_service.compare(left, right), workspace, scope)
 
 
 @app.get("/plans", response_model=list[ProjectPlan])
