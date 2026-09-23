@@ -79,3 +79,20 @@ def test_coding_workflow_cancellation_is_terminal_and_idempotent(tmp_path: Path)
 def test_check_action_has_bounded_shape() -> None:
     action = CheckAction(check_id="pytest", targets=["tests/test_coding_workflows.py"])
     assert action.check_id == "pytest"
+
+
+def test_terminal_workflow_cannot_prepare_checks(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))
+    service._save(item.model_copy(update={"status": "completed"}))
+    with pytest.raises(ValueError, match="checks"):
+        service.prepare_checks(item.workflow_id, "s", [CheckAction(check_id="pytest")])
+
+
+def test_cancelled_workflow_cannot_start_analysis(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))
+    service.cancel(item.workflow_id, "s")
+    with pytest.raises(ValueError, match="analysis"):
+        import asyncio
+        asyncio.run(service.start_analysis(item.workflow_id, "s"))
