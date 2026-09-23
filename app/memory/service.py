@@ -26,9 +26,9 @@ class MemoryService:
             raise ValueError("invalid memory scope or limit")
         return self._store.list(scope, category, status, limit)
 
-    def search(self, scope: str, query: str, limit: int = 20) -> list[MemoryRecord]:
+    def search(self, scope: str, query: str, limit: int = 20, category: str | None = None, status: str = "active") -> list[MemoryRecord]:
         terms = {term.casefold() for term in query.split() if term.strip()}
-        return [record for record in self.list(scope, limit=100) if terms <= set(record.content.casefold().split())][:limit]
+        return [record for record in self.list(scope, category, status, 100) if terms <= set(record.content.casefold().split())][:limit]
 
     def update(self, record_id: str, request: MemoryUpdate) -> MemoryRecord | None:
         record = self.get(record_id)

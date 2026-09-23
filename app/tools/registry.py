@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from app.tools.models import ToolSpec
 
-ToolPermission = Literal["read"]
+ToolPermission = Literal["read", "propose"]
 
 
 @dataclass(frozen=True)

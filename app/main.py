@@ -49,13 +49,14 @@ knowledge_service = KnowledgeService(
     max_extracted_sections=settings.knowledge_max_extracted_sections,
     max_document_chunks=settings.knowledge_max_document_chunks,
 )
-tool_registry = build_tool_registry(filesystem, git, knowledge_service)
-
 action_journal = ActionJournal(
     settings.action_journal_path
 )
 memory_service = MemoryService(MemoryStore(settings.action_journal_path))
 proposal_service = ProposalService(settings.action_journal_path, memory_service)
+tool_registry = build_tool_registry(
+    filesystem, git, knowledge_service, memory_service, proposal_service
+)
 
 agent_service = AgentService(
     settings,

@@ -1,6 +1,9 @@
 from app.knowledge.service import KnowledgeService
+from app.memory.proposals import ProposalService
+from app.memory.service import MemoryService
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
+from app.tools.memory import MemoryTools
 from app.tools.registry import ToolDefinition, ToolRegistry
 
 
@@ -8,6 +11,8 @@ def build_tool_registry(
     filesystem: ReadOnlyFilesystem,
     git: ReadOnlyGit,
     knowledge: KnowledgeService | None = None,
+    memories: MemoryService | None = None,
+    proposals: ProposalService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
 
@@ -225,5 +230,34 @@ def build_tool_registry(
                 },
             )
         )
+
+    if memories is not None and proposals is not None:
+        memory_tools = MemoryTools(memories, proposals)
+        registry.register(ToolDefinition(
+            name="memory.search", description="Search approved project memory in one explicit scope.",
+            permission="read", handler=memory_tools.search,
+            parameters={"type": "object", "properties": {
+                "scope": {"type": "string"}, "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                "category": {"type": ["string", "null"]}, "status": {"type": "string", "default": "active"},
+            }, "required": ["scope", "query"], "additionalProperties": False},
+        ))
+        registry.register(ToolDefinition(
+            name="memory.propose", description="Propose project memory for explicit later human approval.",
+            permission="propose", handler=memory_tools.propose,
+            parameters={"type": "object", "properties": {
+                "scope": {"type": "string"}, "category": {"type": "string"},
+                "content": {"type": "string"}, "provenance": {"type": "string"},
+                "session_reference": {"type": ["string", "null"]},
+                "metadata": {"type": ["object", "null"]},
+            }, "required": ["scope", "category", "content"], "additionalProperties": False},
+        ))
+        registry.register(ToolDefinition(
+            name="memory.proposal_status", description="Read one memory proposal within an explicit scope.",
+            permission="read", handler=memory_tools.proposal_status,
+            parameters={"type": "object", "properties": {
+                "scope": {"type": "string"}, "proposal_id": {"type": "string"},
+            }, "required": ["scope", "proposal_id"], "additionalProperties": False},
+        ))
 
     return registry
