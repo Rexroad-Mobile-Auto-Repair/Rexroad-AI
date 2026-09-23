@@ -777,6 +777,28 @@ async def get_coding_proposal(workflow_id: str, scope: str) -> CodingProposal:
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     return item
 
+@app.get("/supervisor-coding-workflows/{workflow_id}/proposal/preview")
+async def preview_coding_proposal(workflow_id: str, scope: str) -> dict:
+    item = coding_proposal_service.get(workflow_id, scope)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Coding proposal not found")
+    try: return coding_proposal_service.preview(item.proposal_id, scope)
+    except ValueError as exc: raise HTTPException(status_code=404, detail="Coding proposal not found") from exc
+
+@app.get("/supervisor-coding-workflows/{workflow_id}/proposals")
+async def list_coding_proposals(workflow_id: str, scope: str, limit: int = 5) -> list[dict]:
+    return coding_proposal_service.history(workflow_id, scope, limit)
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal/revise")
+async def revise_coding_proposal(workflow_id: str, scope: str, note: str, proposal_id: str | None = None) -> dict:
+    history = coding_proposal_service.history(workflow_id, scope, 5)
+    selected_id = proposal_id or (history[-1]["proposal_id"] if history else None)
+    item = coding_proposal_service.get(selected_id, scope) if selected_id else None
+    if item is None or item.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="Coding proposal not found")
+    try: return await coding_proposal_service.request_revision(item.proposal_id, scope, note)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal cannot be revised") from exc
+
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal/accept", response_model=CodingProposal)
 async def accept_coding_proposal(workflow_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
@@ -787,10 +809,10 @@ async def accept_coding_proposal(workflow_id: str, scope: str, reviewer_session_
 
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal/reject", response_model=CodingProposal)
-async def reject_coding_proposal(workflow_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
+async def reject_coding_proposal(workflow_id: str, scope: str, reviewer_session_id: str | None = None, note: str | None = None) -> CodingProposal:
     item = coding_proposal_service.get(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
-    try: return coding_proposal_service.review(item.proposal_id, scope, "rejected", reviewer_session_id)
+    try: return coding_proposal_service.review(item.proposal_id, scope, "rejected", reviewer_session_id, note)
     except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal review unavailable") from exc
 
 

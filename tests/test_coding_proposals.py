@@ -125,3 +125,31 @@ def test_conversion_rolls_back_plan_specs_and_metadata_on_injected_failure(tmp_p
         assert connection.execute("SELECT COUNT(*) FROM plans").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM execution_specs").fetchone()[0] == 0
     assert proposals.get(proposal.proposal_id, "s").conversion_status is None
+
+
+def test_preview_is_deterministic_and_reports_stale_state(tmp_path: Path) -> None:
+    (tmp_path / "target.txt").write_text("before", encoding="utf-8")
+    workflows = _service(tmp_path)
+    workflow = workflows.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    workflows._save(workflow.model_copy(update={"status": "awaiting_analysis_review", "analyst_task_id": "analyst"}))
+    proposals = CodingProposalService(tmp_path / "state.db", workflows, WorkspaceRegistry({"ws": tmp_path}), workflows.git)
+    proposal = proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[ProposedChange(relative_path="target.txt", expected_text="before", replacement="after", reason="bounded change")]))
+    first = proposals.preview(proposal.proposal_id, "s")
+    assert first["changes"][0]["stale"] is False
+    assert "a/target.txt" in first["changes"][0]["unified_diff"]
+    (tmp_path / "target.txt").write_text("changed", encoding="utf-8")
+    assert proposals.preview(proposal.proposal_id, "s")["changes"][0]["stale"] is True
+
+
+def test_rejected_proposal_revision_preserves_history(tmp_path: Path) -> None:
+    (tmp_path / "target.txt").write_text("before", encoding="utf-8")
+    workflows = _service(tmp_path)
+    workflow = workflows.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    workflows._save(workflow.model_copy(update={"status": "awaiting_analysis_review", "analyst_task_id": "analyst"}))
+    proposals = CodingProposalService(tmp_path / "state.db", workflows, WorkspaceRegistry({"ws": tmp_path}), workflows.git)
+    parent = proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[ProposedChange(relative_path="target.txt", expected_text="before", replacement="after")]))
+    parent = proposals.review(parent.proposal_id, "s", "rejected", "supervisor", "keep the change narrow")
+    child = proposals.create_revision(workflow.workflow_id, "s", parent.proposal_id, ProposalCreate(changes=[ProposedChange(relative_path="target.txt", expected_text="before", replacement="after2")]), "use the revised replacement")
+    assert child.revision_number == 2 and child.parent_proposal_id == parent.proposal_id
+    assert proposals.get(parent.proposal_id, "s").superseded_by_proposal_id == child.proposal_id
+    assert [item["revision_number"] for item in proposals.history(workflow.workflow_id, "s")] == [1, 2]
