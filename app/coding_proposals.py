@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.coding_workflows import CodingWorkflowService
 from app.plans.models import PlanCreate, PlanStepCreate
 from app.policy.workspaces import WorkspaceRegistry
+from app.storage import SQLiteDatabase
 from app.tools.git import ReadOnlyGit
 
 
@@ -61,8 +62,9 @@ class CodingProposal(BaseModel):
 class CodingProposalService:
     ALLOWED_CHECKS: ClassVar[set[str]] = {"pytest", "ruff", "git_diff_check"}
 
-    def __init__(self, database_path: str | Path, workflows: CodingWorkflowService, workspaces: WorkspaceRegistry, git: ReadOnlyGit) -> None:
+    def __init__(self, database_path: str | Path, workflows: CodingWorkflowService, workspaces: WorkspaceRegistry, git: ReadOnlyGit, failure_injector=None) -> None:
         self.path = Path(database_path); self.workflows = workflows; self.workspaces = workspaces; self.git = git
+        self.failure_injector = failure_injector
         with sqlite3.connect(self.path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS coding_proposals (proposal_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)")
 
@@ -109,16 +111,30 @@ class CodingProposalService:
         for check in proposal.checks:
             if check.check_id not in self.ALLOWED_CHECKS: raise ValueError("unsupported check")
         steps = [PlanStepCreate(title=f"Apply {c.relative_path}", metadata={"proposal_id": proposal_id}) for c in proposal.changes] + [PlanStepCreate(title=f"Run {c.check_id}", metadata={"proposal_id": proposal_id}) for c in proposal.checks]
-        plan = self.workflows.plans.create(PlanCreate(scope=scope, workspace=workspace, goal=proposal.objective, steps=steps))
         patch_ids: list[str] = []; check_ids: list[str] = []
-        for step, change in zip(plan.steps, proposal.changes):
-            spec = self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="filesystem.apply_patch", arguments={"workspace": workspace, "relative_path": change.relative_path, "expected_text": change.expected_text, "replacement": change.replacement}, verification={"type": "result_present"})
-            patch_ids.append(spec.id)
-        for step, check in zip(plan.steps[len(proposal.changes):], proposal.checks):
-            spec = self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True})
-            check_ids.append(spec.id)
         updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids, "conversion_status": "converted", "spec_review_status": "pending", "converted_at": datetime.now(UTC), "updated_at": datetime.now(UTC)})
-        self._save(updated); return updated
+        # Keep lightweight test doubles and older integrations compatible; the
+        # real services always take the atomic connection-aware path below.
+        if not hasattr(self.workflows.plans, "create_with_connection"):
+            plan = self.workflows.plans.create(PlanCreate(scope=scope, workspace=workspace, goal=proposal.objective, steps=steps))
+            for step, change in zip(plan.steps, proposal.changes):
+                patch_ids.append(self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="filesystem.apply_patch", arguments={"workspace": workspace, "relative_path": change.relative_path, "expected_text": change.expected_text, "replacement": change.replacement}, verification={"type": "result_present"}).id)
+            for step, check in zip(plan.steps[len(proposal.changes):], proposal.checks):
+                check_ids.append(self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}).id)
+            return updated.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids})
+        with SQLiteDatabase(self.path).transaction(immediate=True) as connection:
+            plan = self.workflows.plans.create_with_connection(connection, PlanCreate(scope=scope, workspace=workspace, goal=proposal.objective, steps=steps))
+            self._fail("plan_insert")
+            for index, (step, change) in enumerate(zip(plan.steps, proposal.changes), 1):
+                spec = self.workflows.specs.create_with_connection(connection, scope=scope, plan_id=plan.id, step_id=step.id, tool_name="filesystem.apply_patch", arguments={"workspace": workspace, "relative_path": change.relative_path, "expected_text": change.expected_text, "replacement": change.replacement}, verification={"type": "result_present"}, validate_step=False)
+                patch_ids.append(spec.id); self._fail(f"patch_spec_insert_{index}")
+            for index, (step, check) in enumerate(zip(plan.steps[len(proposal.changes):], proposal.checks), 1):
+                spec = self.workflows.specs.create_with_connection(connection, scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}, validate_step=False)
+                check_ids.append(spec.id); self._fail(f"check_spec_insert_{index}")
+            updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids})
+            self._fail("proposal_metadata")
+            CodingProposalService.save_with_connection(connection, updated)
+        return updated
 
     def spec_review(self, proposal_id: str, scope: str) -> dict:
         proposal = self.get(proposal_id, scope)
@@ -137,9 +153,10 @@ class CodingProposalService:
                 raise ValueError("proposal specs are stale")
         now = datetime.now(UTC)
         updated = proposal.model_copy(update={"spec_review_status": "accepted", "spec_reviewed_at": now, "updated_at": now})
-        self.workflows.specs.mark_ready_many([*proposal.patch_spec_ids, *proposal.check_spec_ids], scope)
-        with sqlite3.connect(self.path) as db:
-            db.execute("UPDATE coding_proposals SET payload_json=? WHERE proposal_id=?", (updated.model_dump_json(), proposal_id))
+        with SQLiteDatabase(self.path).transaction(immediate=True) as connection:
+            self.workflows.specs.mark_ready_many_with_connection(connection, [*proposal.patch_spec_ids, *proposal.check_spec_ids], scope, failure_injector=self.failure_injector, require_actionable=False)
+            self._fail("review_metadata")
+            CodingProposalService.save_with_connection(connection, updated)
         return updated
 
     def reject_specs(self, proposal_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
@@ -169,3 +186,7 @@ class CodingProposalService:
     @staticmethod
     def save_with_connection(connection: sqlite3.Connection, item: CodingProposal) -> None:
         connection.execute("INSERT OR REPLACE INTO coding_proposals VALUES (?, ?)", (item.proposal_id, item.model_dump_json()))
+
+    def _fail(self, label: str) -> None:
+        if self.failure_injector is not None:
+            self.failure_injector(label)

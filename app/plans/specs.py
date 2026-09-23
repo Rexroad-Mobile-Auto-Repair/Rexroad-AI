@@ -96,22 +96,28 @@ class ExecutionSpecService:
             raise ValueError("invalid spec set")
         with sqlite3.connect(self._database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            rows = []
-            for spec_id in spec_ids:
-                row = connection.execute("SELECT * FROM execution_specs WHERE id=? AND scope=?", (spec_id, scope)).fetchone()
-                if row is None or row[8] != "draft":
-                    raise ValueError("spec is not draft")
-                if self._actionable_step(scope, row[2], row[3]) is None:
+            return self.mark_ready_many_with_connection(connection, spec_ids, scope)
+
+    def mark_ready_many_with_connection(self, connection: sqlite3.Connection, spec_ids: list[str], scope: str, *, failure_injector: Any = None, require_actionable: bool = True) -> list[ExecutionSpec]:
+        if not spec_ids or len(spec_ids) != len(set(spec_ids)):
+            raise ValueError("invalid spec set")
+        for spec_id in spec_ids:
+            row = connection.execute("SELECT * FROM execution_specs WHERE id=? AND scope=?", (spec_id, scope)).fetchone()
+            if row is None or row[8] != "draft":
+                raise ValueError("spec is not draft")
+            step = self._actionable_step_connection(connection, row[2], row[3], scope)
+            if step is None and require_actionable:
+                raise ValueError("spec is stale")
+            if step is None and not require_actionable:
+                plan = self._plans._read_plan(connection, row[2], scope)
+                if plan is None or plan.status != "active" or not any(item.id == row[3] and item.status == "pending" for item in plan.steps):
                     raise ValueError("spec is stale")
-                rows.append(row)
-            now = datetime.now(UTC).isoformat()
-            for spec_id in spec_ids:
-                connection.execute("UPDATE execution_specs SET status='ready', updated_at=? WHERE id=? AND scope=? AND status='draft'", (now, spec_id, scope))
-            updated = []
-            for spec_id in spec_ids:
-                row = connection.execute("SELECT * FROM execution_specs WHERE id=? AND scope=?", (spec_id, scope)).fetchone()
-                updated.append(self._from_row(row))
-            return updated
+        now = datetime.now(UTC).isoformat()
+        for index, spec_id in enumerate(spec_ids, 1):
+            connection.execute("UPDATE execution_specs SET status='ready', updated_at=? WHERE id=? AND scope=? AND status='draft'", (now, spec_id, scope))
+            if failure_injector:
+                failure_injector(f"spec_ready_{index}")
+        return [self._from_row(connection.execute("SELECT * FROM execution_specs WHERE id=? AND scope=?", (spec_id, scope)).fetchone()) for spec_id in spec_ids]
 
     def invalidate(self, spec_id: str, scope: str) -> ExecutionSpec:
         spec = self.get(spec_id, scope)
@@ -151,6 +157,14 @@ class ExecutionSpecService:
             return None
         step = next((item for item in plan.steps if item.id == step_id), None)
         return step if step and step.status == "pending" and self._plans.next_step(plan_id, scope).id == step_id else None
+
+    def _actionable_step_connection(self, connection: sqlite3.Connection, plan_id: str, step_id: str, scope: str) -> PlanStep | None:
+        plan = self._plans._read_plan(connection, plan_id, scope)
+        if plan is None or plan.status != "active":
+            return None
+        step = next((item for item in plan.steps if item.id == step_id), None)
+        next_step = next((item for item in plan.steps if item.status == "in_progress"), None) or next((item for item in plan.steps if item.status == "pending"), None)
+        return step if step and step.status == "pending" and next_step and next_step.id == step_id else None
 
     @staticmethod
     def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> None:
