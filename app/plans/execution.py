@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from app.journal.store import ActionJournal
 from app.plans.service import PlanService
+from app.plans.verification import VerificationPolicy
 from app.tools.registry import ToolApproval, ToolAuthorization, ToolRegistry
 
 
@@ -30,6 +31,7 @@ class PlanExecutionCoordinator:
         approval: ToolApproval | None = None,
         arguments: dict[str, Any],
         verify: Callable[[Any], bool] | None = None,
+        verification_policy: VerificationPolicy | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         plan = self._plans.get(plan_id, scope)
@@ -51,15 +53,30 @@ class PlanExecutionCoordinator:
             raise PlanExecutionError("invalid tool approval")
         approval_validated = tool.high_impact
         trace_id = str(uuid4())
+        verification_status = "not_run"
+        verification_reason = "not_requested"
         self._plans.transition(plan_id, step_id, "in_progress", scope, trace_id)
         try:
             result = self._tools.execute(tool_name, **arguments)
-            if verify is not None and not verify(result):
+            verification = verification_policy.verify(result) if verification_policy is not None else None
+            if verification is not None and not verification.passed:
+                verification_status = "failed"
+                verification_reason = verification.reason
                 raise PlanExecutionError("verification failed")
+            if verification is not None:
+                verification_status = "passed"
+                verification_reason = verification.reason
+            if verify is not None and not verify(result):
+                verification_status = "failed"
+                verification_reason = "callable_failed"
+                raise PlanExecutionError("verification failed")
+            if verify is not None:
+                verification_status = "passed"
+                verification_reason = "callable_passed"
         except Exception as exc:
             if self._journal is not None and session_id is not None:
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
-                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated},
+                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason},
                                      status="error", error="verification failed" if isinstance(exc, PlanExecutionError) else "tool execution failed")
             self._plans.transition(plan_id, step_id, "failed", scope, trace_id)
             if isinstance(exc, PlanExecutionError):
@@ -68,7 +85,7 @@ class PlanExecutionCoordinator:
         try:
             if self._journal is not None and session_id is not None:
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
-                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated},
+                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason},
                                      status="success", result_preview=str(result)[:1000])
             self._plans.transition(plan_id, step_id, "completed", scope, trace_id)
         except Exception as exc:
