@@ -24,6 +24,7 @@ from app.providers.status import ProviderStatus
 from app.tools.factory import build_tool_registry
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
+from app.tools.registry import ToolApprovalRequest
 
 app = FastAPI(
     title="Rexroad AI",
@@ -58,7 +59,8 @@ memory_service = MemoryService(MemoryStore(settings.action_journal_path))
 proposal_service = ProposalService(settings.action_journal_path, memory_service)
 plan_service = PlanService(settings.action_journal_path)
 tool_registry = build_tool_registry(
-    filesystem, git, knowledge_service, memory_service, proposal_service, plan_service
+    filesystem, git, knowledge_service, memory_service, proposal_service, plan_service,
+    settings.action_journal_path,
 )
 
 agent_service = AgentService(
@@ -238,6 +240,30 @@ async def agent_query(
     request: AgentQueryRequest,
 ) -> AgentQueryResponse:
     return await agent_service.query(request)
+
+
+@app.get("/tool-approvals/{request_id}", response_model=ToolApprovalRequest)
+async def get_tool_approval(request_id: str, scope: str) -> ToolApprovalRequest:
+    try:
+        return tool_registry.get_approval_request(request_id, scope)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+
+
+@app.post("/tool-approvals/{request_id}/approve", response_model=ToolApprovalRequest)
+async def approve_tool_request(request_id: str, scope: str) -> ToolApprovalRequest:
+    try:
+        return tool_registry.review_approval(request_id, scope, True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Approval request not found") from exc
+
+
+@app.post("/tool-approvals/{request_id}/reject", response_model=ToolApprovalRequest)
+async def reject_tool_request(request_id: str, scope: str) -> ToolApprovalRequest:
+    try:
+        return tool_registry.review_approval(request_id, scope, False)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Approval request not found") from exc
 
 
 @app.post("/plans", response_model=ProjectPlan)

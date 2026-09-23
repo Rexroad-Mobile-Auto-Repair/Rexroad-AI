@@ -16,8 +16,9 @@ def build_tool_registry(
     memories: MemoryService | None = None,
     proposals: ProposalService | None = None,
     plans: PlanService | None = None,
+    database_path: str | None = None,
 ) -> ToolRegistry:
-    registry = ToolRegistry()
+    registry = ToolRegistry(database_path)
 
     registry.register(
         ToolDefinition(
