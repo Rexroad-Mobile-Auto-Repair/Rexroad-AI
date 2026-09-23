@@ -47,6 +47,7 @@ class CodingJob(BaseModel):
     objective: str
     status: str
     proposal_id: str | None = None
+    analyst_task_id: str | None = None
     proposal_revision: int | None = None
     proposal_status: str | None = None
     proposal_preview_available: bool = False
@@ -81,7 +82,7 @@ class CodingJobService:
         status, action = self._derive(workflow, proposal, patch_specs, check_specs)
         changed = sorted({item.relative_path for item in patch_specs if item.changed is True and item.relative_path})
         blocked = self._blocked_reason(workflow, proposal, patch_specs, check_specs)
-        return CodingJob(job_id=workflow.workflow_id, workflow_id=workflow.workflow_id, scope=scope, workspace=workflow.workspace, objective=workflow.instruction, status=status, proposal_id=proposal.proposal_id if proposal else None, proposal_revision=proposal.revision_number if proposal else None, proposal_status=proposal.status if proposal else None, proposal_preview_available=proposal is not None, conversion_status=proposal.conversion_status if proposal else None, patch_specs=patch_specs, check_specs=check_specs, execution_trace_ids=traces, changed_files=changed, blocked_reason=blocked, verifier_task_id=workflow.verifier_task_id, verifier_review_status=workflow.verifier_review_status, outcome=workflow.outcome, next_action=action, parent_session_id=workflow.parent_session_id, parent_plan_id=workflow.parent_plan_id, parent_step_id=workflow.parent_step_id, observed_at=datetime.now(UTC))
+        return CodingJob(job_id=workflow.workflow_id, workflow_id=workflow.workflow_id, scope=scope, workspace=workflow.workspace, objective=workflow.instruction, status=status, proposal_id=proposal.proposal_id if proposal else None, analyst_task_id=workflow.analyst_task_id, proposal_revision=proposal.revision_number if proposal else None, proposal_status=proposal.status if proposal else None, proposal_preview_available=proposal is not None, conversion_status=proposal.conversion_status if proposal else None, patch_specs=patch_specs, check_specs=check_specs, execution_trace_ids=traces, changed_files=changed, blocked_reason=blocked, verifier_task_id=workflow.verifier_task_id, verifier_review_status=workflow.verifier_review_status, outcome=workflow.outcome, next_action=action, parent_session_id=workflow.parent_session_id, parent_plan_id=workflow.parent_plan_id, parent_step_id=workflow.parent_step_id, observed_at=datetime.now(UTC))
 
     def _latest_proposal(self, workflow_id: str, scope: str):
         history = self.proposals.history(workflow_id, scope, 5)

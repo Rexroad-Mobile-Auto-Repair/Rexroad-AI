@@ -151,7 +151,9 @@ class CodingWorkflowService:
     def ready_specs(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "implementation_ready": raise ValueError("implementation is not ready")
-        for spec_id in item.mutation_spec_ids: self.specs.mark_ready(spec_id, scope)
+        drafts = [spec.id for spec in self.specs.list(scope, 100) if spec.id in item.mutation_spec_ids and spec.status == "draft"]
+        if drafts:
+            self.specs.mark_ready_many(drafts, scope)
         item = item.model_copy(update={"status": "implementing"}); self._save(item); return item
 
     def execute_implementation(self, workflow_id: str, scope: str, approval_request_ids: list[str]) -> CodingWorkflow:
@@ -209,7 +211,7 @@ class CodingWorkflowService:
     async def start_verification(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_verification": raise ValueError("verification is not available")
-        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=item.workspace, instruction=f"Verify objective: {item.instruction[:1600]} Files changed: {', '.join(item.changed_files[:20])}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id)
+        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=item.workspace, instruction=f"Verify completed work: {item.instruction[:1600]} Files changed: {', '.join(item.changed_files[:20])}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id)
         auth = self.agents.authorize_dispatch(request); result = await self.agents.dispatch(request, auth)
         audits = self.agents.audits(scope, 100); dispatch_id = audits[0].dispatch_id if audits and audits[0].task_id == result.task_id else None
         updated = self._require(workflow_id, scope).model_copy(update={"verifier_task_id": result.task_id, "verifier_dispatch_id": dispatch_id, "verifier_review_status": "pending", "status": "awaiting_verifier_review" if result.status == "completed" else "failed"}); self._save(updated); return updated

@@ -94,7 +94,7 @@ class CodingProposalService:
 
     def _build_proposal(self, workflow_id: str, scope: str, request: ProposalCreate) -> CodingProposal:
         workflow = self.workflows.get(workflow_id, scope)
-        if workflow is None or workflow.status != "awaiting_analysis_review" or not workflow.analyst_task_id:
+        if workflow is None or workflow.status not in {"awaiting_analysis_review", "analysis_accepted"} or not workflow.analyst_task_id:
             raise ValueError("accepted analyst review required")
         review = self.workflows.agents.get_review(workflow.analyst_task_id, scope)
         if review is None or review.status != "accepted": raise ValueError("accepted analyst review required")
@@ -156,7 +156,7 @@ class CodingProposalService:
             for index, (step, check) in enumerate(zip(plan.steps[len(proposal.changes):], proposal.checks), 1):
                 spec = self.workflows.specs.create_with_connection(connection, scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}, validate_step=False)
                 check_ids.append(spec.id); self._fail(f"check_spec_insert_{index}")
-            updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids})
+            updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids, "conversion_status": "converted", "spec_review_status": "pending", "converted_at": datetime.now(UTC), "updated_at": datetime.now(UTC)})
             self._fail("proposal_metadata")
             CodingProposalService.save_with_connection(connection, updated)
         return updated
