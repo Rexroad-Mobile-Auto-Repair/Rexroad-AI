@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
+from app.coding_jobs import CodingJob, CodingJobService
 from app.coding_proposals import CodingProposal, CodingProposalService, ProposalCreate
 from app.coding_workflows import (
     CheckAction,
@@ -120,6 +121,7 @@ project_history_service = ProjectStateHistoryService(project_state_service, Proj
 sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry, WorkerModelRouter(settings, provider_registry))
 coding_workflow_service = CodingWorkflowService(settings.action_journal_path, workspace_registry, git, sub_agent_service, plan_service, execution_spec_service, execution_bridge, plan_execution, tool_registry)
 coding_proposal_service = CodingProposalService(settings.action_journal_path, coding_workflow_service, workspace_registry, git)
+coding_job_service = CodingJobService(coding_workflow_service, coding_proposal_service, execution_spec_service, execution_trace_service, tool_registry)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 supervisor_policy = SupervisorPolicy()
 
@@ -776,6 +778,13 @@ async def get_coding_proposal(workflow_id: str, scope: str) -> CodingProposal:
     item = coding_proposal_service.get(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     return item
+
+@app.get("/supervisor-coding-workflows/{workflow_id}/job", response_model=CodingJob)
+async def get_coding_job(workflow_id: str, scope: str) -> CodingJob:
+    job = coding_job_service.get(workflow_id, scope)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Coding job not found")
+    return job
 
 @app.get("/supervisor-coding-workflows/{workflow_id}/proposal/preview")
 async def preview_coding_proposal(workflow_id: str, scope: str) -> dict:
