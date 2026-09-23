@@ -36,6 +36,7 @@ from app.project_history import (
 from app.project_state import ProjectState, ProjectStateService
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
+from app.subagents import SubAgentService, SubAgentTask, SubAgentTaskCreate
 from app.tools.factory import build_tool_registry
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
@@ -86,6 +87,7 @@ execution_trace_service = ExecutionTraceService(action_journal)
 project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
 project_history_service = ProjectStateHistoryService(project_state_service, ProjectSnapshotStore(settings.action_journal_path))
+sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry)
 
 agent_service = AgentService(
     settings,
@@ -381,6 +383,23 @@ async def get_project_state(workspace: str, scope: str) -> ProjectState:
         return project_state_service.get(workspace, scope)
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=404, detail="Project state not found") from exc
+
+
+@app.post("/sub-agent-tasks", response_model=SubAgentTask)
+async def create_sub_agent_task(request: SubAgentTaskCreate) -> SubAgentTask:
+    try:
+        return sub_agent_service.create(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid sub-agent task") from exc
+
+
+@app.get("/sub-agent-tasks/{task_id}")
+async def get_sub_agent_task(task_id: str) -> dict[str, object]:
+    record = sub_agent_service.get(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task, result = record
+    return {"task": task, "result": result}
 
 
 @app.get("/project-briefing", response_model=ProjectBriefing)
