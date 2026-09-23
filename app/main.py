@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
@@ -18,6 +19,7 @@ from app.memory.service import MemoryService
 from app.memory.store import MemoryStore
 from app.plans.models import PlanCreate, PlanStep, ProjectPlan, StepStatus
 from app.plans.service import PlanService
+from app.plans.specs import ExecutionSpec, ExecutionSpecService
 from app.policy.factory import build_workspace_registry
 from app.policy.workspaces import WorkspaceInfo
 from app.providers.factory import build_provider_registry, get_default_model
@@ -64,6 +66,7 @@ tool_registry = build_tool_registry(
     filesystem, git, knowledge_service, memory_service, proposal_service, plan_service,
     settings.action_journal_path, cross_workspace=cross_workspace_service,
 )
+execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan_service, tool_registry)
 
 agent_service = AgentService(
     settings,
@@ -276,6 +279,59 @@ async def reject_tool_request(request_id: str, scope: str) -> ToolApprovalReques
 @app.post("/plans", response_model=ProjectPlan)
 async def create_plan(request: PlanCreate) -> ProjectPlan:
     return plan_service.create(request)
+
+
+class ExecutionSpecCreateRequest(BaseModel):
+    scope: str
+    plan_id: str
+    step_id: str
+    tool_name: str
+    arguments: dict
+    verification: dict
+    session_id: str | None = None
+
+
+@app.post("/execution-specs", response_model=ExecutionSpec)
+async def create_execution_spec(request: ExecutionSpecCreateRequest) -> ExecutionSpec:
+    try:
+        return execution_spec_service.create(**request.model_dump())
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="invalid execution specification") from exc
+
+
+@app.get("/execution-specs", response_model=list[ExecutionSpec])
+async def list_execution_specs(scope: str, status: str | None = None, limit: int = 50) -> list[ExecutionSpec]:
+    try:
+        specs = execution_spec_service.list(scope, limit)
+        return [spec for spec in specs if status is None or spec.status == status]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid execution spec query") from exc
+
+
+@app.get("/execution-specs/{spec_id}", response_model=ExecutionSpec)
+async def get_execution_spec(spec_id: str, scope: str) -> ExecutionSpec:
+    spec = execution_spec_service.get(spec_id, scope)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="Execution spec not found")
+    return spec
+
+
+@app.post("/execution-specs/{spec_id}/ready", response_model=ExecutionSpec)
+async def ready_execution_spec(spec_id: str, scope: str) -> ExecutionSpec:
+    try:
+        return execution_spec_service.mark_ready(spec_id, scope)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Execution spec not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Execution spec is not ready") from exc
+
+
+@app.post("/execution-specs/{spec_id}/invalidate", response_model=ExecutionSpec)
+async def invalidate_execution_spec(spec_id: str, scope: str) -> ExecutionSpec:
+    try:
+        return execution_spec_service.invalidate(spec_id, scope)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Execution spec not found") from exc
 
 
 @app.get("/plans", response_model=list[ProjectPlan])
