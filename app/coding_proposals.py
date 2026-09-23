@@ -82,6 +82,17 @@ class CodingProposalService:
             db.execute("CREATE TABLE IF NOT EXISTS proposal_revision_handoffs (task_id TEXT PRIMARY KEY, scope TEXT NOT NULL, workflow_id TEXT NOT NULL, parent_proposal_id TEXT NOT NULL, note TEXT NOT NULL, materialized_proposal_id TEXT)")
 
     def create(self, workflow_id: str, scope: str, request: ProposalCreate) -> CodingProposal:
+        proposal = self._build_proposal(workflow_id, scope, request)
+        self._save(proposal)
+        return proposal
+
+    def create_with_connection(self, connection: sqlite3.Connection, workflow_id: str, scope: str, request: ProposalCreate, *, parent_proposal_id: str | None = None, revision_number: int = 1, revision_note: str | None = None) -> CodingProposal:
+        proposal = self._build_proposal(workflow_id, scope, request).model_copy(update={"parent_proposal_id": parent_proposal_id, "revision_number": revision_number, "revision_note": revision_note})
+        self.save_with_connection(connection, proposal)
+        self._fail("child_insert")
+        return proposal
+
+    def _build_proposal(self, workflow_id: str, scope: str, request: ProposalCreate) -> CodingProposal:
         workflow = self.workflows.get(workflow_id, scope)
         if workflow is None or workflow.status != "awaiting_analysis_review" or not workflow.analyst_task_id:
             raise ValueError("accepted analyst review required")
@@ -106,7 +117,7 @@ class CodingProposalService:
                 if not resolved.is_file(): raise ValueError("check target not found")
         now = datetime.now(UTC)
         proposal = CodingProposal(proposal_id=str(uuid4()), workflow_id=workflow_id, analyst_task_id=workflow.analyst_task_id, scope=scope, workspace=workflow.workspace, objective=workflow.instruction, status="ready_for_review", changes=request.changes, checks=request.checks, summary=request.summary, baseline_head=self.git.show(workflow.workspace, "HEAD")[:80], target_hashes=hashes, created_at=now, updated_at=now)
-        self._save(proposal); return proposal
+        return proposal
 
     def convert(self, proposal_id: str, scope: str, workspace: str) -> CodingProposal:
         proposal = self.get(proposal_id, scope)
@@ -225,10 +236,25 @@ class CodingProposalService:
         parent = self.get(candidate["parent_proposal_id"], scope)
         if parent is None or parent.status != "rejected" or parent.conversion_status == "converted":
             raise ValueError("parent proposal cannot be revised")
-        revision = self.create_revision(workflow_id, scope, parent.proposal_id, ProposalCreate(**candidate["candidate"]), candidate["note"])
-        with sqlite3.connect(self.path) as db:
-            db.execute("UPDATE proposal_revision_handoffs SET materialized_proposal_id=? WHERE task_id=? AND scope=?", (revision.proposal_id, candidate["task_id"], scope))
-        return revision
+        if parent.revision_number >= 5:
+            raise ValueError("revision limit or stale revision")
+        request = ProposalCreate(**candidate["candidate"])
+        with SQLiteDatabase(self.path).transaction(immediate=True) as connection:
+            handoff = connection.execute("SELECT materialized_proposal_id FROM proposal_revision_handoffs WHERE task_id=? AND scope=?", (candidate["task_id"], scope)).fetchone()
+            if handoff is None:
+                raise ValueError("revision candidate unavailable")
+            if handoff[0]:
+                return self.get(handoff[0], scope)  # type: ignore[return-value]
+            parent_row = connection.execute("SELECT payload_json FROM coding_proposals WHERE proposal_id=?", (parent.proposal_id,)).fetchone()
+            current_parent = CodingProposal.model_validate_json(parent_row[0]) if parent_row else None
+            if current_parent is None or current_parent.status != "rejected" or current_parent.superseded_by_proposal_id:
+                raise ValueError("parent proposal cannot be revised")
+            revision = self.create_with_connection(connection, workflow_id, scope, request, parent_proposal_id=current_parent.proposal_id, revision_number=current_parent.revision_number + 1, revision_note=candidate["note"])
+            self._fail("parent_supersession")
+            connection.execute("UPDATE coding_proposals SET payload_json=? WHERE proposal_id=?", (current_parent.model_copy(update={"superseded_by_proposal_id": revision.proposal_id}).model_dump_json(), current_parent.proposal_id))
+            self._fail("handoff_linkage")
+            connection.execute("UPDATE proposal_revision_handoffs SET materialized_proposal_id=? WHERE task_id=? AND scope=? AND materialized_proposal_id IS NULL", (revision.proposal_id, candidate["task_id"], scope))
+            return revision
 
     def create_revision(self, workflow_id: str, scope: str, parent_proposal_id: str, request: ProposalCreate, note: str) -> CodingProposal:
         parent = self.get(parent_proposal_id, scope)
