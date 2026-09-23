@@ -17,6 +17,7 @@ class ProjectSnapshot(BaseModel):
     scope: str
     state: ProjectState
     captured_at: datetime
+    reason: str = "manual"
 
 
 class ProjectStateComparison(BaseModel):
@@ -38,16 +39,21 @@ class ProjectSnapshotStore:
         self._path = Path(database_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self._path) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS project_state_snapshots (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, scope TEXT NOT NULL, state_json TEXT NOT NULL, captured_at TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS project_state_snapshots (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, scope TEXT NOT NULL, state_json TEXT NOT NULL, captured_at TEXT NOT NULL, reason TEXT NOT NULL DEFAULT 'manual')")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(project_state_snapshots)")}
+            if "reason" not in columns:
+                db.execute("ALTER TABLE project_state_snapshots ADD COLUMN reason TEXT NOT NULL DEFAULT 'manual'")
             db.execute("CREATE INDEX IF NOT EXISTS idx_project_snapshots_scope ON project_state_snapshots (workspace, scope, captured_at)")
 
-    def create(self, state: ProjectState) -> ProjectSnapshot:
-        snapshot = ProjectSnapshot(id=str(uuid4()), workspace=state.workspace, scope=state.scope, state=state, captured_at=datetime.now(UTC))
+    def create(self, state: ProjectState, reason: str = "manual") -> ProjectSnapshot:
+        if not reason or len(reason) > 80:
+            raise ValueError("invalid snapshot reason")
+        snapshot = ProjectSnapshot(id=str(uuid4()), workspace=state.workspace, scope=state.scope, state=state, captured_at=datetime.now(UTC), reason=reason)
         payload = json.dumps(state.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
         if len(payload) > 100_000:
             raise ValueError("snapshot too large")
         with sqlite3.connect(self._path) as db:
-            db.execute("INSERT INTO project_state_snapshots VALUES (?, ?, ?, ?, ?)", (snapshot.id, snapshot.workspace, snapshot.scope, payload, snapshot.captured_at.isoformat()))
+            db.execute("INSERT INTO project_state_snapshots VALUES (?, ?, ?, ?, ?, ?)", (snapshot.id, snapshot.workspace, snapshot.scope, payload, snapshot.captured_at.isoformat(), snapshot.reason))
         return snapshot
 
     def get(self, snapshot_id: str, workspace: str, scope: str) -> ProjectSnapshot | None:
@@ -55,22 +61,28 @@ class ProjectSnapshotStore:
             row = db.execute("SELECT * FROM project_state_snapshots WHERE id=? AND workspace=? AND scope=?", (snapshot_id, workspace, scope)).fetchone()
         if row is None:
             return None
-        return ProjectSnapshot(id=row[0], workspace=row[1], scope=row[2], state=ProjectState.model_validate(json.loads(row[3])), captured_at=datetime.fromisoformat(row[4]))
+        return ProjectSnapshot(id=row[0], workspace=row[1], scope=row[2], state=ProjectState.model_validate(json.loads(row[3])), captured_at=datetime.fromisoformat(row[4]), reason=row[5])
 
     def list(self, workspace: str, scope: str, limit: int = 20) -> list[ProjectSnapshot]:
         if limit < 1 or limit > 100:
             raise ValueError("invalid limit")
         with sqlite3.connect(self._path) as db:
             rows = db.execute("SELECT * FROM project_state_snapshots WHERE workspace=? AND scope=? ORDER BY captured_at DESC, id DESC LIMIT ?", (workspace, scope, limit)).fetchall()
-        return [ProjectSnapshot(id=r[0], workspace=r[1], scope=r[2], state=ProjectState.model_validate(json.loads(r[3])), captured_at=datetime.fromisoformat(r[4])) for r in rows]
+        return [ProjectSnapshot(id=r[0], workspace=r[1], scope=r[2], state=ProjectState.model_validate(json.loads(r[3])), captured_at=datetime.fromisoformat(r[4]), reason=r[5]) for r in rows]
 
 
 class ProjectStateHistoryService:
     def __init__(self, state: ProjectStateService, store: ProjectSnapshotStore) -> None:
         self._state, self._store = state, store
 
-    def snapshot(self, workspace: str, scope: str) -> ProjectSnapshot:
-        return self._store.create(self._state.get(workspace, scope))
+    def snapshot(self, workspace: str, scope: str, reason: str = "manual") -> ProjectSnapshot:
+        return self._store.create(self._state.get(workspace, scope), reason)
+
+    def capture_after_success(self, workspace: str, scope: str, reason: str) -> ProjectSnapshot | None:
+        try:
+            return self.snapshot(workspace, scope, reason)
+        except Exception:  # noqa: BLE001 - optional hook must not change primary success
+            return None
 
     def list(self, workspace: str, scope: str, limit: int = 20) -> list[ProjectSnapshot]:
         return self._store.list(workspace, scope, limit)

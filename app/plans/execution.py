@@ -16,8 +16,8 @@ class PlanExecutionError(RuntimeError):
 
 
 class PlanExecutionCoordinator:
-    def __init__(self, plans: PlanService, tools: ToolRegistry, journal: ActionJournal | None = None) -> None:
-        self._plans = plans
+    def __init__(self, plans: PlanService, tools: ToolRegistry, journal: ActionJournal | None = None, on_success: Callable[[str, str, str], None] | None = None) -> None:
+        self._plans, self._on_success = plans, on_success
         self._tools = tools
         self._journal = journal
 
@@ -89,6 +89,11 @@ class PlanExecutionCoordinator:
                                      permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason},
                                      status="success", result_preview=str(sanitize_output(result))[:1000])
             self._plans.transition(plan_id, step_id, "completed", scope, trace_id)
+            if self._on_success is not None:
+                try:
+                    self._on_success(plan.workspace or "", scope, "verified_execution")
+                except Exception as hook_error:  # noqa: BLE001 - optional snapshot hook is best effort
+                    _ = hook_error
         except Exception as exc:
             self._plans.transition(plan_id, step_id, "failed", scope, trace_id)
             raise PlanExecutionError("execution journal failed") from exc

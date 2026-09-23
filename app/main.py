@@ -81,7 +81,7 @@ tool_registry = build_tool_registry(
 )
 execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan_service, tool_registry)
 execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
-plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal)
+plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal, lambda workspace, scope, reason: project_history_service.capture_after_success(workspace, scope, reason))
 execution_trace_service = ExecutionTraceService(action_journal)
 project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)

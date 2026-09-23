@@ -97,3 +97,43 @@ def test_high_impact_tool_requires_bound_one_time_approval(tmp_path: Path) -> No
     second = plans.create(PlanCreate(scope="a", goal="again", steps=[PlanStepCreate(title="one")]))
     with pytest.raises(PlanExecutionError, match="invalid tool approval"):
         coordinator.execute_once(scope="a", plan_id=second.id, step_id=second.steps[0].id, tool_name="danger", authorization=auth, approval=approval, arguments={"value": "x"}, session_id="session-1")
+
+
+def test_verified_success_invokes_snapshot_hook_once_after_completion(tmp_path: Path) -> None:
+    plans, plan, base = setup_plan(tmp_path)
+    events = []
+    coordinator = PlanExecutionCoordinator(plans, base._tools, on_success=lambda *args: events.append(args))
+    coordinator.execute_once(scope="a", plan_id=plan.id, step_id=plan.steps[0].id, tool_name="safe.read", authorization=base._tools.authorize("safe.read", "a"), arguments={"value": "x"}, verify=lambda value: value == "ok:x")
+    assert events == [("", "a", "verified_execution")]
+    assert plans.get(plan.id, "a").steps[0].status == "completed"
+
+
+@pytest.mark.parametrize("verify", [lambda _: False, None])
+def test_failed_execution_does_not_invoke_snapshot_hook(tmp_path: Path, verify) -> None:
+    plans, plan, base = setup_plan(tmp_path)
+    events = []
+    coordinator = PlanExecutionCoordinator(plans, base._tools, on_success=lambda *args: events.append(args))
+    if verify is None:
+        base._tools.register(ToolDefinition(name="bad", description="bad", permission="read", handler=lambda: (_ for _ in ()).throw(RuntimeError("x"))))
+        name, args = "bad", {}
+    else:
+        name, args = "safe.read", {"value": "x"}
+    with pytest.raises(PlanExecutionError):
+        coordinator.execute_once(scope="a", plan_id=plan.id, step_id=plan.steps[0].id, tool_name=name, authorization=base._tools.authorize(name, "a"), arguments=args, verify=verify)
+    assert events == []
+
+
+def test_snapshot_hook_failure_does_not_undo_success(tmp_path: Path) -> None:
+    plans, plan, base = setup_plan(tmp_path)
+    coordinator = PlanExecutionCoordinator(plans, base._tools, on_success=lambda *_: (_ for _ in ()).throw(RuntimeError("snapshot")))
+    result = coordinator.execute_once(scope="a", plan_id=plan.id, step_id=plan.steps[0].id, tool_name="safe.read", authorization=base._tools.authorize("safe.read", "a"), arguments={"value": "x"})
+    assert result["result"] == "ok:x"
+    assert plans.get(plan.id, "a").steps[0].status == "completed"
+
+
+def test_hook_receives_workspace_and_scope_and_no_hook_pre_completion(tmp_path: Path) -> None:
+    plans, plan, base = setup_plan(tmp_path)
+    events = []
+    coordinator = PlanExecutionCoordinator(plans, base._tools, on_success=lambda *args: events.append((args, plans.get(plan.id, "a").steps[0].status)))
+    coordinator.execute_once(scope="a", plan_id=plan.id, step_id=plan.steps[0].id, tool_name="safe.read", authorization=base._tools.authorize("safe.read", "a"), arguments={"value": "x"})
+    assert events == [(('', "a", "verified_execution"), "completed")]
