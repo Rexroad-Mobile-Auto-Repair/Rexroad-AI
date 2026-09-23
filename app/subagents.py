@@ -14,6 +14,7 @@ from app.providers.registry import ProviderRegistry
 from app.supervisor_policy import SupervisorPolicy, SupervisorRecommendationRequest
 from app.tools.output_policy import sanitize_output
 from app.tools.registry import ToolRegistry
+from app.worker_routing import WorkerModelRouter
 
 PROFILES: dict[str, frozenset[str]] = {
     "researcher": frozenset({"knowledge.search", "knowledge.search_across_workspaces"}),
@@ -142,8 +143,8 @@ class SupervisorDispatchAudit(BaseModel):
 class SubAgentService:
     MAX_TOOL_CALLS = 3
 
-    def __init__(self, database_path: str | Path, providers: ProviderRegistry | None = None, tools: ToolRegistry | None = None) -> None:
-        self._path, self._providers, self._tools = Path(database_path), providers, tools
+    def __init__(self, database_path: str | Path, providers: ProviderRegistry | None = None, tools: ToolRegistry | None = None, router: WorkerModelRouter | None = None) -> None:
+        self._path, self._providers, self._tools, self._router = Path(database_path), providers, tools, router
         self._dispatch_auth: dict[str, DispatchAuthorization] = {}
         self._policy = SupervisorPolicy()
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -192,7 +193,7 @@ class SubAgentService:
         with sqlite3.connect(self._path) as db:
             db.execute("INSERT INTO supervisor_dispatch_audits (dispatch_id, task_id, scope, workspace, recommendation_category, recommended_profile, authorized_profile, parent_session_id, plan_id, step_id, instruction_fingerprint, status, safe_reason, created_at, completed_at, tool_usage_json, mode, max_tool_calls) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', NULL, ?, NULL, '[]', ?, ?)", (dispatch_id, request.scope, request.workspace, recommendation.category, recommendation.profile, request.worker_profile, request.parent_session_id, request.plan_id, request.step_id, authorization.fingerprint, created.isoformat(), request.mode, request.max_tool_calls))
         task = self.create(SubAgentTaskCreate(**request.model_dump()))
-        result = await self.run_with_tools(task.task_id, dispatch_id, "openai_compatible", "default", request.max_tool_calls) if request.mode == "provider_loop" else await self.run(task.task_id)
+        result = await self.run_with_tools(task.task_id, dispatch_id, max_calls=request.max_tool_calls) if request.mode == "provider_loop" else await self.run(task.task_id)
         with sqlite3.connect(self._path) as db:
             db.execute("UPDATE supervisor_dispatch_audits SET task_id=?, status=?, safe_reason=?, completed_at=? WHERE dispatch_id=?", (task.task_id, result.status, result.safe_reason, result.completed_at.isoformat(), dispatch_id))
         return result
@@ -250,6 +251,11 @@ class SubAgentService:
         if record is None:
             raise ValueError("task not found")
         task, _ = record
+        route = self._router.resolve(task.worker_profile) if self._router else None
+        provider_name = route.provider if route else provider_name
+        model = route.model if route else model
+        if provider_name is None or model is None:
+            raise ValueError("worker route unavailable")
         provider = self._providers.get(provider_name)  # type: ignore[arg-type]
         allowed = [self._tools.get(name) for name in task.allowed_tools]
         allowed = [tool for tool in allowed if tool.permission == "read" and not tool.high_impact]

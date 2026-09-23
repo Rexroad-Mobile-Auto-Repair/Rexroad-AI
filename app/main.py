@@ -57,6 +57,7 @@ from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
 from app.tools.output_policy import sanitize_output
 from app.tools.registry import ToolApprovalRequest
+from app.worker_routing import WorkerModelRouter
 
 app = FastAPI(
     title="Rexroad AI",
@@ -102,7 +103,7 @@ execution_trace_service = ExecutionTraceService(action_journal)
 project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
 project_history_service = ProjectStateHistoryService(project_state_service, ProjectSnapshotStore(settings.action_journal_path))
-sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry)
+sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry, WorkerModelRouter(settings, provider_registry))
 supervisor_policy = SupervisorPolicy()
 
 agent_service = AgentService(
