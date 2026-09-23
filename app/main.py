@@ -52,6 +52,12 @@ from app.supervisor_policy import (
     SupervisorRecommendation,
     SupervisorRecommendationRequest,
 )
+from app.supervisor_workflows import (
+    ResearchVerifyWorkflow,
+    ResearchVerifyWorkflowCreate,
+    ResearchVerifyWorkflowResult,
+    SupervisorResearchVerifyWorkflow,
+)
 from app.tools.factory import build_tool_registry
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
@@ -104,6 +110,7 @@ project_state_service = ProjectStateService(workspace_registry, git, memory_serv
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
 project_history_service = ProjectStateHistoryService(project_state_service, ProjectSnapshotStore(settings.action_journal_path))
 sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry, WorkerModelRouter(settings, provider_registry))
+supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 supervisor_policy = SupervisorPolicy()
 
 agent_service = AgentService(
@@ -422,6 +429,35 @@ async def supervisor_dispatch(request: SupervisorDispatchRequest) -> SubAgentRes
         return await sub_agent_service.dispatch(request, authorization)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Dispatch authorization denied") from exc
+
+
+@app.post("/supervisor-workflows/research-verify", response_model=ResearchVerifyWorkflow)
+async def create_research_verify_workflow(request: ResearchVerifyWorkflowCreate) -> ResearchVerifyWorkflow:
+    return supervisor_workflow_service.create(request)
+
+
+@app.get("/supervisor-workflows/{workflow_id}", response_model=ResearchVerifyWorkflowResult)
+async def get_research_verify_workflow(workflow_id: str, scope: str) -> ResearchVerifyWorkflowResult:
+    workflow = supervisor_workflow_service.get(workflow_id, scope)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return supervisor_workflow_service.result(workflow)
+
+
+@app.post("/supervisor-workflows/{workflow_id}/start-research", response_model=ResearchVerifyWorkflowResult)
+async def start_research_verify_workflow(workflow_id: str, scope: str) -> ResearchVerifyWorkflowResult:
+    try:
+        return await supervisor_workflow_service.start_research(workflow_id, scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Research workflow unavailable") from exc
+
+
+@app.post("/supervisor-workflows/{workflow_id}/start-verification", response_model=ResearchVerifyWorkflowResult)
+async def start_verification_workflow(workflow_id: str, scope: str) -> ResearchVerifyWorkflowResult:
+    try:
+        return await supervisor_workflow_service.start_verification(workflow_id, scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Verification workflow unavailable") from exc
 
 
 @app.get("/supervisor-dispatches", response_model=list[SupervisorDispatchAudit])
