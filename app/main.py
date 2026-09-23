@@ -15,6 +15,7 @@ from app.memory.models import MemoryCreate, MemoryRecord, MemoryUpdate
 from app.memory.proposals import MemoryProposal, MemoryProposalCreate, ProposalService
 from app.memory.service import MemoryService
 from app.memory.store import MemoryStore
+from app.plans.service import PlanService
 from app.policy.factory import build_workspace_registry
 from app.policy.workspaces import WorkspaceInfo
 from app.providers.factory import build_provider_registry, get_default_model
@@ -54,8 +55,9 @@ action_journal = ActionJournal(
 )
 memory_service = MemoryService(MemoryStore(settings.action_journal_path))
 proposal_service = ProposalService(settings.action_journal_path, memory_service)
+plan_service = PlanService(settings.action_journal_path)
 tool_registry = build_tool_registry(
-    filesystem, git, knowledge_service, memory_service, proposal_service
+    filesystem, git, knowledge_service, memory_service, proposal_service, plan_service
 )
 
 agent_service = AgentService(

@@ -1,9 +1,11 @@
 from app.knowledge.service import KnowledgeService
 from app.memory.proposals import ProposalService
 from app.memory.service import MemoryService
+from app.plans.service import PlanService
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
 from app.tools.memory import MemoryTools
+from app.tools.plans import PlanTools
 from app.tools.registry import ToolDefinition, ToolRegistry
 
 
@@ -13,6 +15,7 @@ def build_tool_registry(
     knowledge: KnowledgeService | None = None,
     memories: MemoryService | None = None,
     proposals: ProposalService | None = None,
+    plans: PlanService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
 
@@ -258,6 +261,25 @@ def build_tool_registry(
             parameters={"type": "object", "properties": {
                 "scope": {"type": "string"}, "proposal_id": {"type": "string"},
             }, "required": ["scope", "proposal_id"], "additionalProperties": False},
+        ))
+
+    if plans is not None:
+        plan_tools = PlanTools(plans)
+        registry.register(ToolDefinition(
+            name="plan.list", description="List persisted plans in one explicit scope.", permission="read", handler=plan_tools.list,
+            parameters={"type": "object", "properties": {"scope": {"type": "string"}, "status": {"type": ["string", "null"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}}, "required": ["scope"], "additionalProperties": False},
+        ))
+        registry.register(ToolDefinition(
+            name="plan.get", description="Read one persisted plan and its ordered steps.", permission="read", handler=plan_tools.get,
+            parameters={"type": "object", "properties": {"scope": {"type": "string"}, "plan_id": {"type": "string"}}, "required": ["scope", "plan_id"], "additionalProperties": False},
+        ))
+        registry.register(ToolDefinition(
+            name="plan.next_step", description="Read the next actionable step without executing it.", permission="read", handler=plan_tools.next_step,
+            parameters={"type": "object", "properties": {"scope": {"type": "string"}, "plan_id": {"type": "string"}}, "required": ["scope", "plan_id"], "additionalProperties": False},
+        ))
+        registry.register(ToolDefinition(
+            name="plan.update_step", description="Explicitly advance one plan step through a valid state transition.", permission="plan_write", handler=plan_tools.update_step,
+            parameters={"type": "object", "properties": {"scope": {"type": "string"}, "plan_id": {"type": "string"}, "step_id": {"type": "string"}, "status": {"type": "string", "enum": ["in_progress", "completed", "failed", "skipped"]}, "reference": {"type": ["string", "null"]}}, "required": ["scope", "plan_id", "step_id", "status"], "additionalProperties": False},
         ))
 
     return registry
