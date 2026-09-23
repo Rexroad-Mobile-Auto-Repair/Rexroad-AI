@@ -14,7 +14,7 @@ class CodingJobActionRequest(BaseModel):
     action: Literal[
         "start_analysis", "review_analysis", "create_proposal", "review_proposal",
         "request_revision", "convert_proposal", "review_specs", "request_patch_approval",
-        "review_patch_approvals", "execute_patches", "prepare_checks", "execute_checks",
+        "review_patch_approvals", "execute_patches", "execute_checks",
         "start_verifier", "review_verifier"
     ]
     scope: str
@@ -100,10 +100,6 @@ class SupervisorCodingActionService:
             if len(ids) != len(proposal.patch_spec_ids): raise ValueError("approval required for every patch")
             updated = self.workflows.execute_implementation(workflow_id, request.scope, ids)
             affected = [*updated.mutation_trace_ids]
-        elif action == "prepare_checks":
-            if request.checks is None: raise ValueError("checks required")
-            updated = self.workflows.prepare_checks(workflow_id, request.scope, request.checks)
-            affected = [*updated.check_spec_ids]
         elif action == "execute_checks":
             updated = self.workflows.execute_checks(workflow_id, request.scope)
             affected = [*updated.check_trace_ids]

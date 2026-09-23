@@ -49,3 +49,9 @@ async def test_wrong_action_is_rejected_before_service_call() -> None:
     with pytest.raises(ValueError, match="not currently permitted"):
         await service.dispatch("w", CodingJobActionRequest(action="execute_checks", scope="s"))
     assert workflows.calls == 0
+
+
+def test_action_request_registry_has_no_dead_prepare_checks_action() -> None:
+    actions = set(CodingJobActionRequest.model_json_schema()["properties"]["action"]["enum"])
+    assert "prepare_checks" not in actions
+    assert "execute_checks" in actions
