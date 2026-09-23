@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.agents.models import AgentQueryRequest
-from app.agents.service import AgentLoopLimitError, AgentService
+from app.agents.service import AGENT_WORKFLOW_PROMPT, AgentLoopLimitError, AgentService
 from app.config import Settings
 from app.journal.store import ActionJournal
 from app.providers.base import ModelProvider
@@ -61,6 +61,20 @@ class LoopingToolProvider(LifecycleProvider):
             model=request.model,
             tool_calls=[ToolCall(id=f"loop-{self.calls}", name="read", arguments={})],
         )
+
+
+class HistoryProvider(ModelProvider):
+    name = "openai_compatible"
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        return ModelResponse(provider=self.name, model=request.model, content=f"reply-{len(self.requests)}")
+
+    async def health_check(self) -> bool:
+        return True
 
 
 def build_service(tmp_path: Path, provider: LifecycleProvider) -> tuple[AgentService, ActionJournal]:
@@ -190,6 +204,43 @@ async def test_loop_limit_persists_error_after_legitimate_prior_events(tmp_path:
     assert events[-1].payload == {"stage": "loop_limit"}
     assert sum(event.event_type == "tool_result" for event in events) == 2
     assert all(event.event_type != "final_response" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_continuation_reuses_session_and_server_history(tmp_path: Path) -> None:
+    provider = HistoryProvider()
+    registry = ProviderRegistry()
+    registry.register(provider)
+    journal = ActionJournal(tmp_path / "journal.sqlite3")
+    service = AgentService(Settings(_env_file=None), registry, journal=journal)
+
+    first = await service.query(AgentQueryRequest(message="remember pineapple-47"))
+    second = await service.query(AgentQueryRequest(message="what was it?", session_id=first.session_id))
+
+    assert second.session_id == first.session_id
+    assert [message.content for message in provider.requests[1].messages] == [
+        AGENT_WORKFLOW_PROMPT, "remember pineapple-47", "reply-1", "what was it?"
+    ]
+    events = journal.list_events_for_session(first.session_id)
+    assert [event.event_type for event in events] == [
+        "user_request", "model_response", "final_response",
+        "user_request", "model_response", "final_response",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invalid_session_and_workspace_switch_fail_safely(tmp_path: Path) -> None:
+    provider = HistoryProvider()
+    registry = ProviderRegistry()
+    registry.register(provider)
+    journal = ActionJournal(tmp_path / "journal.sqlite3")
+    service = AgentService(Settings(_env_file=None), registry, journal=journal)
+
+    first = await service.query(AgentQueryRequest(message="hello", workspace=None))
+    with pytest.raises(ValueError, match="Session not found"):
+        await service.query(AgentQueryRequest(message="bad", session_id="missing"))
+    with pytest.raises(ValueError, match="Workspace context"):
+        await service.query(AgentQueryRequest(message="switch", session_id=first.session_id, workspace="acceptance_test"))
 
 
 def test_event_payload_content_is_exactly_bounded(tmp_path: Path) -> None:

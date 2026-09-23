@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
-from app.agents.service import AgentService
+from app.agents.service import AgentService, AgentSessionError
 from app.coding_actions import (
     CodingJobActionRequest,
     CodingJobActionResult,
@@ -121,6 +121,11 @@ CHAT_HTML = CHAT_HTML.replace("const d=await api('/sessions/'+encodeURIComponent
 CHAT_HTML = CHAT_HTML.replace(".side{padding:1rem", ".side{padding:1.25rem 1rem")
 CHAT_HTML = CHAT_HTML.replace(".brand{font-size:1.25rem", ".brand{padding:.25rem 0;font-size:1.25rem")
 CHAT_HTML = CHAT_HTML.replace(".session{padding:.55rem", ".session{padding:.7rem .6rem;line-height:1.3;border-bottom:1px solid #263441")
+CHAT_HTML = CHAT_HTML.replace("const $=id=>document.getElementById(id),messages=$('messages');let busy=false;", "const $=id=>document.getElementById(id),messages=$('messages');let busy=false,currentSessionId=null;")
+CHAT_HTML = CHAT_HTML.replace("messages.innerHTML='';events.filter", "currentSessionId=id;messages.innerHTML='';events.filter")
+CHAT_HTML = CHAT_HTML.replace("$('new').onclick=()=>{messages.innerHTML=", "$('new').onclick=()=>{currentSessionId=null;messages.innerHTML=")
+CHAT_HTML = CHAT_HTML.replace("body:JSON.stringify({message:text,workspace:$('workspace').value||null})", "body:JSON.stringify({message:text,session_id:currentSessionId,workspace:$('workspace').value||null})")
+CHAT_HTML = CHAT_HTML.replace("add('assistant',d.content||'');$('status')", "currentSessionId=d.session_id;add('assistant',d.content||'');$('status')")
 
 settings = Settings()
 
@@ -383,7 +388,11 @@ async def agent_query(
             workspace_registry.get_root(request.workspace)
         except WorkspaceAccessError:
             raise HTTPException(status_code=404, detail="Workspace not found") from None
-    return await agent_service.query(request)
+    try:
+        return await agent_service.query(request)
+    except AgentSessionError as exc:
+        status = 404 if str(exc) == "Session not found" else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from None
 
 
 @app.get("/tool-approvals/{request_id}", response_model=ToolApprovalRequest)

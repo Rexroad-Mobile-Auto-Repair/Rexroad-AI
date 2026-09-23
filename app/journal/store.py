@@ -314,28 +314,21 @@ class ActionJournal:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT
-                    session_id,
-                    MIN(provider) AS provider,
-                    MIN(model) AS model,
-                    COUNT(*) AS action_count,
-                    SUM(
-                        CASE
-                            WHEN status = 'success' THEN 1
-                            ELSE 0
-                        END
-                    ) AS success_count,
-                    SUM(
-                        CASE
-                            WHEN status = 'error' THEN 1
-                            ELSE 0
-                        END
-                    ) AS error_count,
-                    MIN(created_at) AS started_at,
-                    MAX(created_at) AS last_action_at
-                FROM action_journal
-                GROUP BY session_id
-                ORDER BY last_action_at DESC
+                SELECT s.session_id,
+                    MIN(a.provider) AS provider,
+                    MIN(a.model) AS model,
+                    COUNT(DISTINCT a.id) AS action_count,
+                    COUNT(DISTINCT CASE WHEN a.status = 'success' THEN a.id END) AS success_count,
+                    COUNT(DISTINCT CASE WHEN a.status = 'error' THEN a.id END) AS error_count,
+                    MIN(a.created_at) AS started_at,
+                    MAX(a.created_at) AS last_action_at,
+                    MIN(e.created_at) AS event_started_at,
+                    MAX(e.created_at) AS event_last_at
+                FROM (SELECT session_id FROM action_journal UNION SELECT session_id FROM agent_events) s
+                LEFT JOIN action_journal a ON a.session_id = s.session_id
+                LEFT JOIN agent_events e ON e.session_id = s.session_id
+                GROUP BY s.session_id
+                ORDER BY COALESCE(last_action_at, event_last_at) DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -347,17 +340,13 @@ class ActionJournal:
             SessionSummary(
                 session_id=row["session_id"],
                 title=titles[row["session_id"]],
-                provider=row["provider"],
-                model=row["model"],
+                provider=row["provider"] or "unknown",
+                model=row["model"] or "unknown",
                 action_count=row["action_count"],
                 success_count=row["success_count"],
                 error_count=row["error_count"],
-                started_at=datetime.fromisoformat(
-                    row["started_at"]
-                ),
-                last_action_at=datetime.fromisoformat(
-                    row["last_action_at"]
-                ),
+                started_at=datetime.fromisoformat(row["started_at"] or row["event_started_at"]),
+                last_action_at=datetime.fromisoformat(row["last_action_at"] or row["event_last_at"]),
             )
             for row in rows
         ]
@@ -369,28 +358,21 @@ class ActionJournal:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT
-                    session_id,
-                    MIN(provider) AS provider,
-                    MIN(model) AS model,
-                    COUNT(*) AS action_count,
-                    SUM(
-                        CASE
-                            WHEN status = 'success' THEN 1
-                            ELSE 0
-                        END
-                    ) AS success_count,
-                    SUM(
-                        CASE
-                            WHEN status = 'error' THEN 1
-                            ELSE 0
-                        END
-                    ) AS error_count,
-                    MIN(created_at) AS started_at,
-                    MAX(created_at) AS last_action_at
-                FROM action_journal
-                WHERE session_id = ?
-                GROUP BY session_id
+                SELECT s.session_id,
+                    MIN(a.provider) AS provider,
+                    MIN(a.model) AS model,
+                    COUNT(DISTINCT a.id) AS action_count,
+                    COUNT(DISTINCT CASE WHEN a.status = 'success' THEN a.id END) AS success_count,
+                    COUNT(DISTINCT CASE WHEN a.status = 'error' THEN a.id END) AS error_count,
+                    MIN(a.created_at) AS started_at,
+                    MAX(a.created_at) AS last_action_at,
+                    MIN(e.created_at) AS event_started_at,
+                    MAX(e.created_at) AS event_last_at
+                FROM (SELECT session_id FROM action_journal UNION SELECT session_id FROM agent_events) s
+                LEFT JOIN action_journal a ON a.session_id = s.session_id
+                LEFT JOIN agent_events e ON e.session_id = s.session_id
+                WHERE s.session_id = ?
+                GROUP BY s.session_id
                 """,
                 (session_id,),
             ).fetchone()
@@ -403,17 +385,13 @@ class ActionJournal:
         return SessionSummary(
             session_id=row["session_id"],
             title=title,
-            provider=row["provider"],
-            model=row["model"],
+            provider=row["provider"] or "unknown",
+            model=row["model"] or "unknown",
             action_count=row["action_count"],
             success_count=row["success_count"],
             error_count=row["error_count"],
-            started_at=datetime.fromisoformat(
-                row["started_at"]
-            ),
-            last_action_at=datetime.fromisoformat(
-                row["last_action_at"]
-            ),
+            started_at=datetime.fromisoformat(row["started_at"] or row["event_started_at"]),
+            last_action_at=datetime.fromisoformat(row["last_action_at"] or row["event_last_at"]),
         )
     @staticmethod
     def _row_to_entry(

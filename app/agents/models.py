@@ -5,6 +5,7 @@ from app.providers.models import ProviderName
 
 class AgentQueryRequest(BaseModel):
     message: str
+    session_id: str | None = None
     workspace: str | None = None
     provider: ProviderName | None = None
     model: str | None = None

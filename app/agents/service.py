@@ -36,6 +36,10 @@ class AgentLoopLimitError(RuntimeError):
     pass
 
 
+class AgentSessionError(ValueError):
+    pass
+
+
 class AgentService:
     def __init__(
         self,
@@ -55,6 +59,25 @@ class AgentService:
         self._context_builder = context_builder or ContextBuilder()
         self._allow_tools_without_workspace = allow_tools_without_workspace
 
+    @staticmethod
+    def _history_messages(journal: ActionJournal, session_id: str, budget: int) -> list[ModelMessage]:
+        events = journal.list_events_for_session(session_id)
+        messages: list[ModelMessage] = []
+        used = 0
+        for event in reversed(events):
+            if event.event_type not in {"user_request", "final_response"}:
+                continue
+            content = event.payload.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            message = ModelMessage(role="user" if event.event_type == "user_request" else "assistant", content=content)
+            size = len(content.encode("utf-8"))
+            if messages and used + size > budget:
+                break
+            messages.append(message)
+            used += size
+        return list(reversed(messages))
+
     async def query(self, request: AgentQueryRequest) -> AgentQueryResponse:
         provider_name = request.provider or self._settings.default_provider
         provider = self._registry.get(provider_name)
@@ -64,13 +87,27 @@ class AgentService:
             provider_name,
         )
 
-        session_id = str(uuid4())
+        session_id = request.session_id or str(uuid4())
+        history: list[ModelMessage] = []
+        if request.session_id:
+            if self._journal is None or self._journal.get_session(session_id) is None:
+                raise AgentSessionError("Session not found")
+            prior = self._journal.list_events_for_session(session_id)
+            first = next((event for event in prior if event.event_type == "user_request"), None)
+            established_workspace = first.payload.get("workspace") if first else None
+            if established_workspace != request.workspace:
+                raise AgentSessionError("Workspace context cannot change during a session")
+            history = self._history_messages(
+                self._journal,
+                session_id,
+                min(12000, max(1000, self._settings.model_context_byte_budget // 2)),
+            )
 
         if self._journal is not None:
             self._journal.append_event(
                 session_id=session_id,
                 event_type="user_request",
-                payload={"content": request.message},
+                payload={"content": request.message, "workspace": request.workspace},
             )
 
         messages = [
@@ -78,6 +115,7 @@ class AgentService:
                 role="system",
                 content=AGENT_WORKFLOW_PROMPT,
             ),
+            *history,
             ModelMessage(
                 role="user",
                 content=(f"Selected workspace context: {request.workspace}.\n" if request.workspace else "") + request.message,
