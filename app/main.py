@@ -44,6 +44,11 @@ from app.subagents import (
     SubAgentTask,
     SubAgentTaskCreate,
 )
+from app.supervisor_policy import (
+    SupervisorPolicy,
+    SupervisorRecommendation,
+    SupervisorRecommendationRequest,
+)
 from app.tools.factory import build_tool_registry
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
@@ -95,6 +100,7 @@ project_state_service = ProjectStateService(workspace_registry, git, memory_serv
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
 project_history_service = ProjectStateHistoryService(project_state_service, ProjectSnapshotStore(settings.action_journal_path))
 sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry)
+supervisor_policy = SupervisorPolicy()
 
 agent_service = AgentService(
     settings,
@@ -398,6 +404,11 @@ async def create_sub_agent_task(request: SubAgentTaskCreate) -> SubAgentTask:
         return sub_agent_service.create(request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid sub-agent task") from exc
+
+
+@app.post("/supervisor/recommend-worker", response_model=SupervisorRecommendation)
+async def recommend_worker(request: SupervisorRecommendationRequest) -> SupervisorRecommendation:
+    return supervisor_policy.recommend(request)
 
 
 @app.get("/sub-agent-tasks/{task_id}")
