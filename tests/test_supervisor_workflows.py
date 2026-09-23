@@ -28,6 +28,10 @@ async def test_research_verify_workflow_requires_explicit_review(tmp_path):
     assert final.workflow.status == "completed"
     assert final.final_outcome == "verified"
     assert workflows.result(final.workflow).final_outcome == "verified"
+    context = workflows.verified_context(workflow.workflow_id, "s")
+    assert context.workflow_id == workflow.workflow_id
+    with pytest.raises(ValueError):
+        workflows.verified_context(workflow.workflow_id, "other")
     assert verified.workflow.parent_session_id == "parent"
     assert verified.workflow.plan_id == "plan"
     assert verified.workflow.step_id == "step"

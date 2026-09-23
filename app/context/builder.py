@@ -154,6 +154,19 @@ class ContextBuilder:
             supplemental.append(section)
             supplemental_bytes = candidate if candidate <= request.total_byte_budget else 0
 
+        verified = []
+        verified_bytes = 0
+        for item in sorted(request.verified_workflow_context, key=lambda value: str(getattr(value, "workflow_id", ""))):
+            workflow_id = getattr(item, "workflow_id", "unknown")
+            researcher = self._prefix_by_bytes(str(getattr(item, "researcher_summary", "")), request.supplemental_context_byte_budget)
+            verifier = self._prefix_by_bytes(str(getattr(item, "verifier_summary", "")), request.supplemental_context_byte_budget)
+            section = f"--- verified worker analysis ({workflow_id}) ---\nresearcher analysis:\n{researcher}\nverifier analysis:\n{verifier}"
+            section = self._prefix_by_bytes(section, request.supplemental_context_byte_budget)
+            candidate = self._message_bytes(ModelMessage(role="user", content="Verified worker analysis (not authoritative evidence):\n" + "\n".join([*verified, section])))
+            if candidate <= request.total_byte_budget:
+                verified.append(section)
+                verified_bytes = candidate
+
         return ContextResult(
             messages=[
                 *messages,
@@ -163,9 +176,10 @@ class ContextBuilder:
                     else []
                 ),
                 *([ModelMessage(role="user", content="Supplemental worker analysis:\n" + "\n".join(supplemental))] if supplemental else []),
+                *([ModelMessage(role="user", content="Verified worker analysis (not authoritative evidence):\n" + "\n".join(verified))] if verified else []),
             ],
-            byte_count=required_byte_count + evidence_bytes + supplemental_bytes,
-            message_count=len(messages) + (1 if evidence_sections else 0) + (1 if supplemental else 0),
+            byte_count=required_byte_count + evidence_bytes + supplemental_bytes + verified_bytes,
+            message_count=len(messages) + (1 if evidence_sections else 0) + (1 if supplemental else 0) + (1 if verified else 0),
             truncations=truncations,
             evidence_decisions=evidence_decisions,
         )

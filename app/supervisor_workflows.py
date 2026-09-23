@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.context.models import VerifiedWorkflowContext
 from app.subagents import SubAgentResult, SubAgentService, SupervisorDispatchRequest
 
 
@@ -177,6 +178,16 @@ class SupervisorResearchVerifyWorkflow:
         outcome = "verified" if status == "accepted" else "rejected"
         self._update(workflow_id, scope, verifier_review_status=review.status, final_outcome=outcome, status="completed" if status == "accepted" else "failed")
         return self.result(self.get(workflow_id, scope))
+
+    def verified_context(self, workflow_id: str, scope: str, workspace: str | None = None) -> VerifiedWorkflowContext:
+        workflow = self.get(workflow_id, scope)
+        if workflow is None or workflow.status != "completed" or workflow.final_outcome != "verified" or (workspace is not None and workflow.workspace != workspace):
+            raise ValueError("verified workflow unavailable")
+        researcher = self._agents.get(workflow.researcher_task_id)[1] if workflow.researcher_task_id and self._agents.get(workflow.researcher_task_id) else None
+        verifier = self._agents.get(workflow.verifier_task_id)[1] if workflow.verifier_task_id and self._agents.get(workflow.verifier_task_id) else None
+        if researcher is None or verifier is None:
+            raise ValueError("verified workflow unavailable")
+        return VerifiedWorkflowContext(workflow_id=workflow.workflow_id, scope=scope, workspace=workflow.workspace, researcher_summary=researcher.summary[:4000], verifier_summary=verifier.summary[:4000], researcher_task_id=workflow.researcher_task_id, verifier_task_id=workflow.verifier_task_id)
 
     def _update(self, workflow_id: str, scope: str, **changes: str | None) -> None:
         workflow = self.get(workflow_id, scope)

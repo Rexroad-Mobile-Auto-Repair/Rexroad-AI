@@ -18,6 +18,7 @@ from app.research.models import (
     ResearchRequest,
 )
 from app.subagents import SubAgentService
+from app.supervisor_workflows import SupervisorResearchVerifyWorkflow
 
 RESEARCH_SYSTEM_PROMPT = (
     "Answer the research question using the supplied retrieved evidence. "
@@ -35,12 +36,14 @@ class ResearchService:
         providers: ProviderRegistry,
         context_builder: ContextBuilder | None = None,
         subagents: SubAgentService | None = None,
+        workflows: SupervisorResearchVerifyWorkflow | None = None,
     ) -> None:
         self._settings = settings
         self._knowledge = knowledge
         self._providers = providers
         self._context_builder = context_builder or ContextBuilder()
         self._subagents = subagents
+        self._workflows = workflows
 
     async def research(self, request: ResearchRequest) -> ResearchAnswer:
         research_id = str(uuid4())
@@ -81,6 +84,15 @@ class ResearchService:
                     contributions.append(self._subagents.incorporated_contribution(incorporation_id, request.workspace))
             except ValueError:
                 return ResearchAnswer(status="context_error", research_id=research_id)
+        workflows = []
+        if request.verified_workflow_ids:
+            if self._workflows is None:
+                return ResearchAnswer(status="context_error", research_id=research_id)
+            try:
+                for workflow_id in sorted(set(request.verified_workflow_ids)):
+                    workflows.append(self._workflows.verified_context(workflow_id, request.workspace, request.workspace))
+            except ValueError:
+                return ResearchAnswer(status="context_error", research_id=research_id)
         try:
             context = self._context_builder.build(
                 ContextRequest(
@@ -92,6 +104,7 @@ class ResearchService:
                     total_evidence_byte_budget=self._settings.model_total_evidence_byte_budget,
                     evidence_content_byte_budget=self._settings.model_evidence_content_byte_budget,
                     supplemental_worker_context=contributions,
+                    verified_workflow_context=workflows,
                 )
             )
         except ContextBudgetError:

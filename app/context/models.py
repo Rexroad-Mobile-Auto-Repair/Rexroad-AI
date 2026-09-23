@@ -50,6 +50,15 @@ class ApprovedEvidence(BaseModel):
         return value
 
 
+class VerifiedWorkflowContext(BaseModel):
+    workflow_id: str
+    scope: str
+    workspace: str | None = None
+    researcher_summary: str = Field(max_length=4000)
+    verifier_summary: str = Field(max_length=4000)
+    researcher_task_id: str | None = None
+    verifier_task_id: str | None = None
+
 class ContextRequest(BaseModel):
     messages: list[ModelMessage]
     total_byte_budget: int = Field(gt=0)
@@ -59,6 +68,7 @@ class ContextRequest(BaseModel):
     total_evidence_byte_budget: int = Field(default=24576, gt=0)
     evidence_content_byte_budget: int = Field(default=8192, gt=0)
     supplemental_worker_context: list[object] = Field(default_factory=list, max_length=4)
+    verified_workflow_context: list[VerifiedWorkflowContext] = Field(default_factory=list, max_length=4)
     supplemental_context_byte_budget: int = Field(default=8192, gt=0)
 
 

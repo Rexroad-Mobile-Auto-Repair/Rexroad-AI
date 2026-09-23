@@ -24,6 +24,7 @@ class ResearchRequest(BaseModel):
     model: str | None = None
     contribution_ids: list[str] = Field(default_factory=list, max_length=4)
     incorporation_ids: list[str] = Field(default_factory=list, max_length=4)
+    verified_workflow_ids: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("query")
     @classmethod
