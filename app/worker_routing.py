@@ -4,6 +4,7 @@ from app.config import Settings
 from app.providers.factory import get_default_model
 from app.providers.registry import ProviderRegistry
 
+
 class WorkerRoute(BaseModel):
     provider: str
     model: str
