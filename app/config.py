@@ -39,4 +39,8 @@ class Settings(BaseSettings):
     model_max_evidence_items: int = Field(default=8, gt=0)
     model_total_evidence_byte_budget: int = Field(default=24576, gt=0)
     model_evidence_content_byte_budget: int = Field(default=8192, gt=0)
+    knowledge_max_source_bytes: int = Field(default=5_000_000, gt=0)
+    knowledge_max_extracted_bytes: int = Field(default=5_000_000, gt=0)
+    knowledge_max_extracted_sections: int = Field(default=1000, gt=0)
+    knowledge_max_document_chunks: int = Field(default=1000, gt=0)
 

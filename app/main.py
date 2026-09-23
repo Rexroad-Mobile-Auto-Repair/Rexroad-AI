@@ -40,6 +40,10 @@ knowledge_service = KnowledgeService(
         api_key=settings.local_openai_api_key,
         timeout=settings.request_timeout_seconds,
     ),
+    max_source_bytes=settings.knowledge_max_source_bytes,
+    max_extracted_bytes=settings.knowledge_max_extracted_bytes,
+    max_extracted_sections=settings.knowledge_max_extracted_sections,
+    max_document_chunks=settings.knowledge_max_document_chunks,
 )
 tool_registry = build_tool_registry(filesystem, git, knowledge_service)
 

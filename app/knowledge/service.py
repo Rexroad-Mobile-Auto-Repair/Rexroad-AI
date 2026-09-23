@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.knowledge.embeddings import EmbeddingProvider
+from app.knowledge.extractors import DocumentExtractorRegistry
 from app.knowledge.models import (
     Evidence,
     KnowledgeChunk,
@@ -54,10 +55,20 @@ class KnowledgeService:
         workspaces: WorkspaceRegistry,
         store: KnowledgeStore,
         embedding_provider: EmbeddingProvider | None = None,
+        extractors: DocumentExtractorRegistry | None = None,
+        max_source_bytes: int = 5_000_000,
+        max_extracted_bytes: int = 5_000_000,
+        max_extracted_sections: int = 1000,
+        max_document_chunks: int = 1000,
     ) -> None:
         self._workspaces = workspaces
         self._store = store
         self._embedding_provider = embedding_provider
+        self._extractors = extractors or DocumentExtractorRegistry()
+        self._max_source_bytes = max_source_bytes
+        self._max_extracted_bytes = max_extracted_bytes
+        self._max_extracted_sections = max_extracted_sections
+        self._max_document_chunks = max_document_chunks
 
     def index(self, workspace: str) -> KnowledgeIndexResult:
         root = self._workspaces.get_root(workspace)
@@ -70,6 +81,29 @@ class KnowledgeService:
             if not self._is_inside_workspace(path, root):
                 continue
             if self._is_ignored(path, root) or not path.is_file():
+                continue
+            extractor = self._extractors.for_path(path)
+            if extractor is not None:
+                try:
+                    if path.stat().st_size > self._max_source_bytes:
+                        skipped_files += 1
+                        continue
+                    document = extractor.extract(path)
+                    if len(document.sections) > self._max_extracted_sections:
+                        skipped_files += 1
+                        continue
+                    if sum(len(section.content.encode("utf-8")) for section in document.sections) > self._max_extracted_bytes:
+                        skipped_files += 1
+                        continue
+                    file_chunks = self._extracted_chunks(workspace, root, path, document, git_commit_sha)
+                    if len(file_chunks) > self._max_document_chunks:
+                        skipped_files += 1
+                        continue
+                except (OSError, UnicodeError):
+                    skipped_files += 1
+                    continue
+                indexed_files += 1
+                chunks.extend(file_chunks)
                 continue
             source_info = SOURCE_EXTENSIONS.get(path.suffix.casefold())
             if source_info is None:
@@ -311,9 +345,35 @@ class KnowledgeService:
                 ))
         return chunks
 
+    def _extracted_chunks(self, workspace: str, root: Path, path: Path, document, git_commit_sha: str | None) -> list[KnowledgeChunk]:
+        chunks: list[KnowledgeChunk] = []
+        file_path = path.relative_to(root).as_posix()
+        source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        for index, section in enumerate(document.sections, 1):
+            content_hash = hashlib.sha256(section.content.encode("utf-8")).hexdigest()
+            identity = "\n".join((workspace, file_path, str(index), content_hash))
+            chunks.append(KnowledgeChunk(
+                chunk_id=hashlib.sha256(identity.encode("utf-8")).hexdigest(), content=section.content,
+                source_type="extracted_document", workspace=workspace, file_path=file_path,
+                language="text", line_start=index, line_end=index, content_hash=content_hash,
+                git_commit_sha=git_commit_sha, indexed_at=datetime.now(UTC),
+                metadata={**document.metadata, "source_hash": source_hash,
+                          **({"section": section.section} if section.section else {}),
+                          **({"page": str(section.page)} if section.page is not None else {})},
+            ))
+        return chunks
+
     def _freshness(self, chunk: KnowledgeChunk) -> str:
         try:
             path = self._workspaces.resolve_path(chunk.workspace, chunk.file_path)
+            if chunk.source_type == "extracted_document":
+                current_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+                if current_hash != chunk.metadata.get("source_hash"):
+                    return "stale"
+                current_sha = self._git_commit_sha(self._workspaces.get_root(chunk.workspace))
+                if chunk.git_commit_sha is not None and current_sha != chunk.git_commit_sha:
+                    return "stale"
+                return "current"
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             return "missing"
