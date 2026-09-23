@@ -58,6 +58,29 @@ class SubAgentResult(BaseModel):
     completed_at: datetime
 
 
+class SubAgentReview(BaseModel):
+    task_id: str
+    scope: str
+    status: str
+    reviewer_session_id: str | None = None
+    note: str | None = None
+    reviewed_at: datetime
+
+
+class SubAgentContribution(BaseModel):
+    task_id: str
+    worker_profile: str
+    scope: str
+    workspace: str | None
+    summary: str
+    references: list[str]
+    tool_usage: list[str]
+    parent_session_id: str | None
+    plan_id: str | None
+    step_id: str | None
+    accepted_at: datetime
+
+
 class SubAgentService:
     MAX_TOOL_CALLS = 3
 
@@ -66,6 +89,7 @@ class SubAgentService:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self._path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS sub_agent_tasks (task_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT, created_at TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS sub_agent_reviews (task_id TEXT PRIMARY KEY, scope TEXT NOT NULL, status TEXT NOT NULL, reviewer_session_id TEXT, note TEXT, reviewed_at TEXT NOT NULL)")
 
     def create(self, request: SubAgentTaskCreate) -> SubAgentTask:
         if request.worker_profile not in PROFILES or not request.scope.strip() or not set(request.allowed_tools) <= PROFILES[request.worker_profile]:
@@ -100,7 +124,35 @@ class SubAgentService:
                 result = SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="provider_error", started_at=started, completed_at=datetime.now(UTC))
         with sqlite3.connect(self._path) as db:
             db.execute("UPDATE sub_agent_tasks SET result_json=? WHERE task_id=?", (result.model_dump_json(), task_id))
+            db.execute("INSERT OR IGNORE INTO sub_agent_reviews VALUES (?, ?, 'pending', NULL, NULL, ?)", (task_id, task.scope, result.completed_at.isoformat()))
         return result
+
+    def review(self, task_id: str, scope: str, status: str, reviewer_session_id: str | None = None, note: str | None = None) -> SubAgentReview:
+        record = self.get(task_id)
+        if record is None or record[0].scope != scope or record[1] is None:
+            raise ValueError("review not found")
+        if status not in {"accepted", "rejected"} or reviewer_session_id == record[0].parent_session_id:
+            raise ValueError("invalid review")
+        with sqlite3.connect(self._path) as db:
+            row = db.execute("SELECT status, reviewer_session_id, note, reviewed_at FROM sub_agent_reviews WHERE task_id=? AND scope=?", (task_id, scope)).fetchone()
+            if row and row[0] != "pending":
+                return SubAgentReview(task_id=task_id, scope=scope, status=row[0], reviewer_session_id=row[1], note=row[2], reviewed_at=datetime.fromisoformat(row[3]))
+            now = datetime.now(UTC)
+            bounded_note = note[:1000] if note else None
+            db.execute("INSERT OR REPLACE INTO sub_agent_reviews VALUES (?, ?, ?, ?, ?, ?)", (task_id, scope, status, reviewer_session_id, bounded_note, now.isoformat()))
+        return SubAgentReview(task_id=task_id, scope=scope, status=status, reviewer_session_id=reviewer_session_id, note=bounded_note, reviewed_at=now)
+
+    def get_review(self, task_id: str, scope: str) -> SubAgentReview | None:
+        with sqlite3.connect(self._path) as db:
+            row = db.execute("SELECT task_id, scope, status, reviewer_session_id, note, reviewed_at FROM sub_agent_reviews WHERE task_id=? AND scope=?", (task_id, scope)).fetchone()
+        return SubAgentReview(task_id=row[0], scope=row[1], status=row[2], reviewer_session_id=row[3], note=row[4], reviewed_at=datetime.fromisoformat(row[5])) if row else None
+
+    def contribution(self, task_id: str, scope: str) -> SubAgentContribution:
+        record, review = self.get(task_id) or (None, None)
+        reviewed = self.get_review(task_id, scope)
+        if record is None or review is None or reviewed is None or reviewed.status != "accepted" or record.scope != scope:
+            raise ValueError("contribution unavailable")
+        return SubAgentContribution(task_id=task_id, worker_profile=record.worker_profile, scope=scope, workspace=record.workspace, summary=review.summary[:4000], references=review.references[:20], tool_usage=review.tool_usage[:20], parent_session_id=record.parent_session_id, plan_id=record.plan_id, step_id=record.step_id, accepted_at=reviewed.reviewed_at)
 
     def use_tool(self, task_id: str, tool_name: str, arguments: dict) -> object:
         record = self.get(task_id)

@@ -28,6 +28,35 @@ async def test_provider_free_run_is_structured_and_safe(tmp_path):
     assert result.safe_reason == "deterministic_stub"
 
 
+@pytest.mark.asyncio
+async def test_completed_result_requires_explicit_review_and_contribution(tmp_path):
+    service = SubAgentService(tmp_path / "state.sqlite3")
+    task = service.create(SubAgentTaskCreate(worker_profile="researcher", scope="s", instruction="find", parent_session_id="worker-session", plan_id="p", step_id="st"))
+    await service.run(task.task_id)
+    assert service.get_review(task.task_id, "s").status == "pending"
+    with pytest.raises(ValueError):
+        service.contribution(task.task_id, "s")
+    accepted = service.review(task.task_id, "s", "accepted", "supervisor", "ok")
+    assert accepted.status == "accepted"
+    contribution = service.contribution(task.task_id, "s")
+    assert contribution.plan_id == "p"
+    assert service.review(task.task_id, "s", "accepted", "supervisor").status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_reject_and_scope_or_self_review_are_safe(tmp_path):
+    service = SubAgentService(tmp_path / "state.sqlite3")
+    task = service.create(SubAgentTaskCreate(worker_profile="verifier", scope="s", instruction="check", parent_session_id="worker"))
+    await service.run(task.task_id)
+    with pytest.raises(ValueError):
+        service.review(task.task_id, "other", "accepted", "supervisor")
+    with pytest.raises(ValueError):
+        service.review(task.task_id, "s", "accepted", "worker")
+    assert service.review(task.task_id, "s", "rejected", "supervisor").status == "rejected"
+    with pytest.raises(ValueError):
+        service.contribution(task.task_id, "s")
+
+
 def test_worker_uses_only_read_profile_tools(tmp_path):
     tools = ToolRegistry()
     calls = []

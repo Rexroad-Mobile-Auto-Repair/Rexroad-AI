@@ -36,7 +36,13 @@ from app.project_history import (
 from app.project_state import ProjectState, ProjectStateService
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
-from app.subagents import SubAgentService, SubAgentTask, SubAgentTaskCreate
+from app.subagents import (
+    SubAgentContribution,
+    SubAgentReview,
+    SubAgentService,
+    SubAgentTask,
+    SubAgentTaskCreate,
+)
 from app.tools.factory import build_tool_registry
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
@@ -408,6 +414,38 @@ async def run_sub_agent_task(task_id: str) -> dict[str, object]:
         return {"result": await sub_agent_service.run(task_id)}
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
+
+
+@app.get("/sub-agent-tasks/{task_id}/review", response_model=SubAgentReview)
+async def get_sub_agent_review(task_id: str, scope: str) -> SubAgentReview:
+    review = sub_agent_service.get_review(task_id, scope)
+    if review is None:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return review
+
+
+@app.post("/sub-agent-tasks/{task_id}/accept", response_model=SubAgentReview)
+async def accept_sub_agent_result(task_id: str, scope: str, reviewer_session_id: str | None = None, note: str | None = None) -> SubAgentReview:
+    try:
+        return sub_agent_service.review(task_id, scope, "accepted", reviewer_session_id, note)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Review unavailable") from exc
+
+
+@app.post("/sub-agent-tasks/{task_id}/reject", response_model=SubAgentReview)
+async def reject_sub_agent_result(task_id: str, scope: str, reviewer_session_id: str | None = None, note: str | None = None) -> SubAgentReview:
+    try:
+        return sub_agent_service.review(task_id, scope, "rejected", reviewer_session_id, note)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Review unavailable") from exc
+
+
+@app.get("/sub-agent-tasks/{task_id}/contribution", response_model=SubAgentContribution)
+async def get_sub_agent_contribution(task_id: str, scope: str) -> SubAgentContribution:
+    try:
+        return sub_agent_service.contribution(task_id, scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Contribution unavailable") from exc
 
 
 @app.get("/project-briefing", response_model=ProjectBriefing)
