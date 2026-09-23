@@ -140,6 +140,14 @@ class CodingWorkflowService:
         item = item.model_copy(update={"plan_id": plan.id, "mutation_spec_ids": ids, "status": "implementation_ready", "baseline_status": status[:4000], "baseline_branch": branch, "baseline_head": self.git.show(item.workspace, "HEAD")[:80], "baseline_dirty_files": sorted(dirty)})
         self._save(item); return item
 
+    def bind_converted_specs(self, workflow_id: str, scope: str, plan_id: str, patch_spec_ids: list[str], check_spec_ids: list[str]) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if item.status in {"completed", "failed", "cancelled"}:
+            raise ValueError("workflow is terminal")
+        updated = item.model_copy(update={"plan_id": plan_id, "mutation_spec_ids": patch_spec_ids, "check_spec_ids": check_spec_ids, "status": "implementation_ready"})
+        self._save(updated)
+        return updated
+
     def ready_specs(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "implementation_ready": raise ValueError("implementation is not ready")

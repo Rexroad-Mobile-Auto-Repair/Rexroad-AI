@@ -72,6 +72,9 @@ class SupervisorCodingActionService:
         elif action == "convert_proposal":
             if proposal is None: raise ValueError("proposal unavailable")
             updated = self.proposals.convert(proposal.proposal_id, request.scope, before.workspace)
+            first_spec = self.workflows.specs.get((updated.patch_spec_ids or updated.check_spec_ids)[0], request.scope) if (updated.patch_spec_ids or updated.check_spec_ids) else None
+            if first_spec is None: raise ValueError("converted specs unavailable")
+            self.workflows.bind_converted_specs(workflow_id, request.scope, first_spec.plan_id, updated.patch_spec_ids, updated.check_spec_ids)
             affected = [updated.proposal_id, *updated.patch_spec_ids, *updated.check_spec_ids]
         elif action == "review_specs":
             if proposal is None or request.decision is None: raise ValueError("spec review decision required")
