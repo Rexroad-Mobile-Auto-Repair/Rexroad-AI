@@ -12,6 +12,7 @@ from app.knowledge.models import KnowledgeIndexResult, KnowledgeSearchResult
 from app.knowledge.service import KnowledgeService
 from app.knowledge.store import KnowledgeStore
 from app.memory.models import MemoryCreate, MemoryRecord, MemoryUpdate
+from app.memory.proposals import MemoryProposal, MemoryProposalCreate, ProposalService
 from app.memory.service import MemoryService
 from app.memory.store import MemoryStore
 from app.policy.factory import build_workspace_registry
@@ -54,6 +55,7 @@ action_journal = ActionJournal(
     settings.action_journal_path
 )
 memory_service = MemoryService(MemoryStore(settings.action_journal_path))
+proposal_service = ProposalService(settings.action_journal_path, memory_service)
 
 agent_service = AgentService(
     settings,
@@ -176,6 +178,40 @@ async def delete_memory(memory_id: str) -> dict[str, bool]:
     if not memory_service.delete(memory_id):
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"deleted": True}
+
+
+@app.post("/memory-proposals", response_model=MemoryProposal)
+async def create_memory_proposal(request: MemoryProposalCreate) -> MemoryProposal:
+    return proposal_service.create(request)
+
+
+@app.get("/memory-proposals", response_model=list[MemoryProposal])
+async def list_memory_proposals(scope: str, status: str = "pending", limit: int = 50) -> list[MemoryProposal]:
+    return proposal_service.list(scope, status, limit)  # type: ignore[arg-type]
+
+
+@app.get("/memory-proposals/{proposal_id}", response_model=MemoryProposal)
+async def get_memory_proposal(proposal_id: str) -> MemoryProposal:
+    proposal = proposal_service.get(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Memory proposal not found")
+    return proposal
+
+
+@app.post("/memory-proposals/{proposal_id}/approve", response_model=MemoryProposal)
+async def approve_memory_proposal(proposal_id: str) -> MemoryProposal:
+    proposal = proposal_service.approve(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=409, detail="Memory proposal cannot be approved")
+    return proposal
+
+
+@app.post("/memory-proposals/{proposal_id}/reject", response_model=MemoryProposal)
+async def reject_memory_proposal(proposal_id: str) -> MemoryProposal:
+    proposal = proposal_service.reject(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=409, detail="Memory proposal cannot be rejected")
+    return proposal
 
 
 @app.post("/knowledge/index/{workspace}")
