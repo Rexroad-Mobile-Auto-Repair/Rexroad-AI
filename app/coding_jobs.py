@@ -199,7 +199,9 @@ class CodingJobService:
             return "awaiting_patch_approval", CodingJobAction(action="request_patch_approval", allowed=False, reason="a patch approval was rejected")
         if any(item.approval_status in {"not_requested", "pending"} for item in patches):
             pending = any(item.approval_status == "pending" for item in patches)
-            return "awaiting_patch_approval", CodingJobAction(action="request_patch_approval", allowed=not pending, reason="patch approval is pending" if pending else "patch approval is required")
+            if pending:
+                return "awaiting_patch_approval", CodingJobAction(action="review_patch_approvals", allowed=True, reason="patch approval is pending")
+            return "awaiting_patch_approval", CodingJobAction(action="request_patch_approval", allowed=True, reason="patch approval is required")
         if workflow.status in {"implementation_ready", "implementing"}:
             return "ready_to_execute_patches", CodingJobAction(action="execute_patches", allowed=True, reason="approved patch execution is available")
         if workflow.status == "awaiting_checks":

@@ -113,6 +113,15 @@ class CodingWorkflowService:
         item = item.model_copy(update={"analyst_task_id": result.task_id, "analyst_dispatch_id": dispatch_id, "status": "awaiting_analysis_review" if result.status == "completed" else "failed"})
         self._save(item); return item
 
+    def review_analysis(self, workflow_id: str, scope: str, status: str, reviewer_session_id: str | None = None, note: str | None = None) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if item.status != "awaiting_analysis_review" or not item.analyst_task_id or status not in {"accepted", "rejected"}:
+            raise ValueError("analysis review unavailable")
+        review = self.agents.review(item.analyst_task_id, scope, status, reviewer_session_id, note)
+        updated = item.model_copy(update={"analyst_review_status": review.status, "status": "analysis_accepted" if status == "accepted" else "failed", "outcome": None if status == "accepted" else "rejected"})
+        self._save(updated)
+        return updated
+
     def prepare(self, workflow_id: str, scope: str, patches: list[PatchAction]) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_analysis_review" or not item.analyst_task_id: raise ValueError("accepted analysis required")
