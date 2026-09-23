@@ -109,6 +109,7 @@ class CodingProposalService:
                 raise ValueError("invalid workspace path")
             path = self.workspaces.resolve_path(workflow.workspace, change.relative_path)
             if not path.is_file(): raise ValueError("target file not found")
+            if change.expected_text not in path.read_text(encoding="utf-8", errors="replace"): raise ValueError("expected text no longer matches")
             hashes[change.relative_path] = hashlib.sha256(path.read_bytes()).hexdigest()
         for check in request.checks:
             if check.check_id not in self.ALLOWED_CHECKS: raise ValueError("unsupported check")
