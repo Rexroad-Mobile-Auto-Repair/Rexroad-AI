@@ -436,6 +436,14 @@ async def create_research_verify_workflow(request: ResearchVerifyWorkflowCreate)
     return supervisor_workflow_service.create(request)
 
 
+@app.get("/supervisor-workflows", response_model=list[ResearchVerifyWorkflow])
+async def list_research_verify_workflows(scope: str, limit: int = 20, status: str | None = None) -> list[ResearchVerifyWorkflow]:
+    try:
+        return supervisor_workflow_service.list(scope, limit, status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid workflow query") from exc
+
+
 @app.get("/supervisor-workflows/{workflow_id}", response_model=ResearchVerifyWorkflowResult)
 async def get_research_verify_workflow(workflow_id: str, scope: str) -> ResearchVerifyWorkflowResult:
     workflow = supervisor_workflow_service.get(workflow_id, scope)
@@ -458,6 +466,14 @@ async def start_verification_workflow(workflow_id: str, scope: str) -> ResearchV
         return await supervisor_workflow_service.start_verification(workflow_id, scope)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Verification workflow unavailable") from exc
+
+
+@app.post("/supervisor-workflows/{workflow_id}/cancel", response_model=ResearchVerifyWorkflow)
+async def cancel_research_verify_workflow(workflow_id: str, scope: str, reason: str | None = None) -> ResearchVerifyWorkflow:
+    try:
+        return supervisor_workflow_service.cancel(workflow_id, scope, reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Workflow cancellation unavailable") from exc
 
 
 @app.get("/supervisor-dispatches", response_model=list[SupervisorDispatchAudit])

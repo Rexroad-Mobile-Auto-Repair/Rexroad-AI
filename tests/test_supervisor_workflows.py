@@ -56,3 +56,36 @@ async def test_workflow_persists_and_research_is_idempotent(tmp_path):
     persisted = restarted.get(workflow.workflow_id, "s")
     assert persisted is not None
     assert persisted.researcher_task_id == first.workflow.researcher_task_id
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_scoped_idempotent_and_preserves_worker_history(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    agents = SubAgentService(path)
+    workflows = SupervisorResearchVerifyWorkflow(path, agents)
+    workflow = workflows.create(ResearchVerifyWorkflowCreate(scope="s", instruction="research this"))
+    started = await workflows.start_research(workflow.workflow_id, "s")
+    task_id = started.workflow.researcher_task_id
+    cancelled = workflows.cancel(workflow.workflow_id, "s", "supervisor stopped")
+    assert cancelled.status == "cancelled"
+    assert cancelled.cancellation_reason == "supervisor stopped"
+    assert cancelled.cancelled_at is not None
+    assert agents.get(task_id)[1] is not None
+    with pytest.raises(ValueError):
+        await workflows.start_verification(workflow.workflow_id, "s")
+    assert workflows.cancel(workflow.workflow_id, "s").status == "cancelled"
+    with pytest.raises(ValueError):
+        workflows.cancel(workflow.workflow_id, "other")
+    restarted = SupervisorResearchVerifyWorkflow(path, SubAgentService(path))
+    assert restarted.get(workflow.workflow_id, "s").status == "cancelled"
+
+
+def test_workflow_listing_is_bounded_scoped_and_filterable(tmp_path):
+    workflows = SupervisorResearchVerifyWorkflow(tmp_path / "state.sqlite3", SubAgentService(tmp_path / "state.sqlite3"))
+    first = workflows.create(ResearchVerifyWorkflowCreate(scope="s", instruction="research one"))
+    workflows.create(ResearchVerifyWorkflowCreate(scope="other", instruction="research two"))
+    workflows.cancel(first.workflow_id, "s")
+    assert [item.workflow_id for item in workflows.list("s", status="cancelled")] == [first.workflow_id]
+    assert workflows.list("s", 1)[0].scope == "s"
+    with pytest.raises(ValueError):
+        workflows.list("s", 101)
