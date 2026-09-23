@@ -1,8 +1,11 @@
 import pytest
 
+from app.config import Settings
 from app.providers.models import ModelResponse
+from app.providers.registry import ProviderRegistry
 from app.subagents import PROFILES, SubAgentService, SubAgentTaskCreate, SupervisorDispatchRequest
 from app.tools.registry import ToolDefinition, ToolRegistry
+from app.worker_routing import WorkerModelRouter
 
 
 def test_profiles_are_narrow_and_task_persists(tmp_path):
@@ -149,3 +152,54 @@ def test_dispatch_mode_and_budget_are_bound(tmp_path):
     assert auth.fingerprint == service.authorize_dispatch(request).fingerprint
     with pytest.raises(ValueError):
         SupervisorDispatchRequest(worker_profile="researcher", scope="s", instruction="research", mode="provider_loop", max_tool_calls=6)
+
+
+@pytest.mark.asyncio
+async def test_provider_loop_audit_persists_trusted_routing_metadata(tmp_path):
+    class Provider:
+        name = "openai_compatible"
+
+        async def generate(self, request):
+            return ModelResponse(provider=self.name, model="ignored-by-audit", content="done")
+
+        async def health_check(self):
+            return True
+
+    settings = Settings()
+    providers = ProviderRegistry()
+    providers.register(Provider())
+    tools = ToolRegistry()
+    db_path = tmp_path / "state.sqlite3"
+    router = WorkerModelRouter(settings, providers)
+    service = SubAgentService(db_path, providers, tools, router)
+
+    loop_request = SupervisorDispatchRequest(
+        worker_profile="researcher",
+        scope="s",
+        instruction="research this",
+        mode="provider_loop",
+        max_tool_calls=1,
+    )
+    loop_authorization = service.authorize_dispatch(loop_request)
+    loop_result = await service.dispatch(loop_request, loop_authorization)
+    loop_audit = service.audits("s")[0]
+    assert loop_result.status == "completed"
+    assert loop_audit.provider == settings.default_provider
+    assert loop_audit.model == settings.local_openai_model
+    assert loop_audit.routing_reason == "configured_default"
+    assert settings.local_openai_base_url not in loop_audit.model_dump_json()
+
+    one_shot = SupervisorDispatchRequest(worker_profile="researcher", scope="s", instruction="research directly")
+    await service.dispatch(one_shot, service.authorize_dispatch(one_shot))
+    one_shot_audit = next(item for item in service.audits("s") if item.mode == "one_shot")
+    assert one_shot_audit.provider is None
+    assert one_shot_audit.model is None
+    assert one_shot_audit.routing_reason is None
+    assert service.audit(loop_audit.dispatch_id, "other") is None
+
+    restarted = SubAgentService(db_path, providers, tools, router)
+    persisted = restarted.audit(loop_audit.dispatch_id, "s")
+    assert persisted is not None
+    assert persisted.provider == loop_audit.provider
+    assert persisted.model == loop_audit.model
+    assert persisted.routing_reason == loop_audit.routing_reason
