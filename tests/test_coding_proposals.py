@@ -1,4 +1,6 @@
+import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -6,6 +8,7 @@ import pytest
 from app.coding_proposals import CodingProposalService, ProposalCreate, ProposedChange
 from app.coding_workflows import CodingWorkflowCreate
 from app.policy.workspaces import WorkspaceRegistry
+from app.subagents import SubAgentResult
 from tests.test_coding_workflows import _service
 
 
@@ -153,3 +156,33 @@ def test_rejected_proposal_revision_preserves_history(tmp_path: Path) -> None:
     assert child.revision_number == 2 and child.parent_proposal_id == parent.proposal_id
     assert proposals.get(parent.proposal_id, "s").superseded_by_proposal_id == child.proposal_id
     assert [item["revision_number"] for item in proposals.history(workflow.workflow_id, "s")] == [1, 2]
+
+
+def test_reviewed_revision_candidate_materializes_once(tmp_path: Path) -> None:
+    (tmp_path / "target.txt").write_text("before", encoding="utf-8")
+    workflows = _service(tmp_path)
+    workflow = workflows.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    workflows._save(workflow.model_copy(update={"status": "awaiting_analysis_review", "analyst_task_id": "analyst"}))
+    proposals = CodingProposalService(tmp_path / "state.db", workflows, WorkspaceRegistry({"ws": tmp_path}), workflows.git)
+    parent = proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[ProposedChange(relative_path="target.txt", expected_text="before", replacement="after")]))
+    parent = proposals.review(parent.proposal_id, "s", "rejected", "supervisor", "tighten it")
+    result = SubAgentResult(task_id="revision-task", worker_profile="code_analyst", status="completed", summary=json.dumps({"proposal": {"changes": [{"relative_path": "target.txt", "expected_text": "before", "replacement": "revised"}], "checks": [], "summary": "revised"}}), started_at=datetime.now(UTC), completed_at=datetime.now(UTC))
+    with sqlite3.connect(tmp_path / "state.db") as db:
+        db.execute("CREATE TABLE IF NOT EXISTS sub_agent_tasks (task_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT, created_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS sub_agent_reviews (task_id TEXT PRIMARY KEY, scope TEXT NOT NULL, status TEXT NOT NULL, reviewer_session_id TEXT, note TEXT, reviewed_at TEXT NOT NULL)")
+        db.execute("INSERT INTO sub_agent_tasks VALUES (?, ?, ?, ?)", ("revision-task", json.dumps({"task_id": "revision-task", "worker_profile": "code_analyst", "scope": "s", "workspace": "ws", "instruction": "revise", "allowed_tools": [], "status": "completed", "parent_session_id": None, "plan_id": None, "step_id": None, "created_at": datetime.now(UTC).isoformat()}), result.model_dump_json(), datetime.now(UTC).isoformat()))
+        db.execute("INSERT INTO sub_agent_reviews VALUES (?, ?, 'accepted', 'supervisor', NULL, ?)", ("revision-task", "s", datetime.now(UTC).isoformat()))
+        db.execute("INSERT INTO proposal_revision_handoffs VALUES (?, ?, ?, ?, ?, NULL)", ("revision-task", "s", workflow.workflow_id, parent.proposal_id, "tighten it"))
+    class Agents:
+        def get(self, task_id):
+            with sqlite3.connect(tmp_path / "state.db") as db:
+                row = db.execute("SELECT payload_json, result_json FROM sub_agent_tasks WHERE task_id=?", (task_id,)).fetchone()
+            return (type("Task", (), {"task_id": task_id})(), SubAgentResult.model_validate_json(row[1]))
+        def get_review(self, task_id, scope):
+            return type("Review", (), {"status": "accepted"})()
+    workflows.agents = Agents()
+    candidate = proposals.revision_candidate(workflow.workflow_id, "s")
+    assert candidate["review_status"] == "accepted"
+    child = proposals.materialize_revision_candidate(workflow.workflow_id, "s")
+    assert child.revision_number == 2 and child.status == "ready_for_review"
+    assert proposals.materialize_revision_candidate(workflow.workflow_id, "s").proposal_id == child.proposal_id

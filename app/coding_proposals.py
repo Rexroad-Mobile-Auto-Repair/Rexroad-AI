@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +33,12 @@ class ProposedCheck(BaseModel):
 
 
 class ProposalCreate(BaseModel):
+    changes: list[ProposedChange] = Field(min_length=1, max_length=5)
+    checks: list[ProposedCheck] = Field(default_factory=list, max_length=5)
+    summary: str = Field(default="", max_length=2000)
+
+
+class RevisionCandidate(BaseModel):
     changes: list[ProposedChange] = Field(min_length=1, max_length=5)
     checks: list[ProposedCheck] = Field(default_factory=list, max_length=5)
     summary: str = Field(default="", max_length=2000)
@@ -72,6 +79,7 @@ class CodingProposalService:
         self.failure_injector = failure_injector
         with sqlite3.connect(self.path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS coding_proposals (proposal_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS proposal_revision_handoffs (task_id TEXT PRIMARY KEY, scope TEXT NOT NULL, workflow_id TEXT NOT NULL, parent_proposal_id TEXT NOT NULL, note TEXT NOT NULL, materialized_proposal_id TEXT)")
 
     def create(self, workflow_id: str, scope: str, request: ProposalCreate) -> CodingProposal:
         workflow = self.workflows.get(workflow_id, scope)
@@ -187,7 +195,40 @@ class CodingProposalService:
         request = SupervisorDispatchRequest(worker_profile="code_analyst", scope=scope, workspace=proposal.workspace, instruction=f"Revise proposal {proposal.proposal_id}. Objective: {proposal.objective[:1200]}. Prior changes: {[(c.relative_path, c.reason) for c in proposal.changes][:5]}. Supervisor note: {note[:2000]}", parent_session_id=None, mode="one_shot")
         authorization = self.workflows.agents.authorize_dispatch(request)
         result = await self.workflows.agents.dispatch(request, authorization)
+        with sqlite3.connect(self.path) as db:
+            db.execute("INSERT OR REPLACE INTO proposal_revision_handoffs(task_id, scope, workflow_id, parent_proposal_id, note, materialized_proposal_id) VALUES (?, ?, ?, ?, ?, NULL)", (result.task_id, scope, proposal.workflow_id, proposal.proposal_id, note[:2000]))
         return {"proposal_id": proposal.proposal_id, "revision_number": proposal.revision_number + 1, "parent_proposal_id": proposal.proposal_id, "task_id": result.task_id, "status": result.status, "note": note[:2000]}
+
+    def revision_candidate(self, workflow_id: str, scope: str) -> dict:
+        with sqlite3.connect(self.path) as db:
+            row = db.execute("SELECT task_id, parent_proposal_id, note, materialized_proposal_id FROM proposal_revision_handoffs WHERE workflow_id=? AND scope=? ORDER BY rowid DESC LIMIT 1", (workflow_id, scope)).fetchone()
+        if row is None:
+            raise ValueError("revision candidate unavailable")
+        task_id, parent_id, note, materialized = row
+        parent = self.get(parent_id, scope)
+        record = self.workflows.agents.get(task_id)
+        review = self.workflows.agents.get_review(task_id, scope)
+        if parent is None or record is None or review is None or review.status != "accepted" or record[1] is None:
+            raise ValueError("accepted reviewed analyst result required")
+        result = record[1]
+        try:
+            payload = json.loads(result.summary)
+            candidate = RevisionCandidate.model_validate(payload.get("proposal", payload))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            raise ValueError("invalid revision candidate") from None
+        return {"workflow_id": workflow_id, "parent_proposal_id": parent_id, "revision_number": parent.revision_number + 1, "task_id": task_id, "review_status": review.status, "note": note, "materialized_proposal_id": materialized, "summary": result.summary[:2000], "candidate": candidate.model_dump()}
+
+    def materialize_revision_candidate(self, workflow_id: str, scope: str) -> CodingProposal:
+        candidate = self.revision_candidate(workflow_id, scope)
+        if candidate["materialized_proposal_id"]:
+            return self.get(candidate["materialized_proposal_id"], scope)  # type: ignore[return-value]
+        parent = self.get(candidate["parent_proposal_id"], scope)
+        if parent is None or parent.status != "rejected" or parent.conversion_status == "converted":
+            raise ValueError("parent proposal cannot be revised")
+        revision = self.create_revision(workflow_id, scope, parent.proposal_id, ProposalCreate(**candidate["candidate"]), candidate["note"])
+        with sqlite3.connect(self.path) as db:
+            db.execute("UPDATE proposal_revision_handoffs SET materialized_proposal_id=? WHERE task_id=? AND scope=?", (revision.proposal_id, candidate["task_id"], scope))
+        return revision
 
     def create_revision(self, workflow_id: str, scope: str, parent_proposal_id: str, request: ProposalCreate, note: str) -> CodingProposal:
         parent = self.get(parent_proposal_id, scope)

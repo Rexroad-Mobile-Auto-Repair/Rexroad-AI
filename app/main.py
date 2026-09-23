@@ -799,6 +799,16 @@ async def revise_coding_proposal(workflow_id: str, scope: str, note: str, propos
     try: return await coding_proposal_service.request_revision(item.proposal_id, scope, note)
     except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal cannot be revised") from exc
 
+@app.get("/supervisor-coding-workflows/{workflow_id}/proposal/revision-candidate")
+async def get_revision_candidate(workflow_id: str, scope: str) -> dict:
+    try: return coding_proposal_service.revision_candidate(workflow_id, scope)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Revision candidate unavailable") from exc
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal/revision-candidate/materialize", response_model=CodingProposal)
+async def materialize_revision_candidate(workflow_id: str, scope: str) -> CodingProposal:
+    try: return coding_proposal_service.materialize_revision_candidate(workflow_id, scope)
+    except ValueError as exc: raise HTTPException(status_code=409, detail="Revision candidate cannot be materialized") from exc
+
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal/accept", response_model=CodingProposal)
 async def accept_coding_proposal(workflow_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
