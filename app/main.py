@@ -87,7 +87,7 @@ execution_trace_service = ExecutionTraceService(action_journal)
 project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
 project_history_service = ProjectStateHistoryService(project_state_service, ProjectSnapshotStore(settings.action_journal_path))
-sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry)
+sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry)
 
 agent_service = AgentService(
     settings,
@@ -400,6 +400,14 @@ async def get_sub_agent_task(task_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="Task not found")
     task, result = record
     return {"task": task, "result": result}
+
+
+@app.post("/sub-agent-tasks/{task_id}/run")
+async def run_sub_agent_task(task_id: str) -> dict[str, object]:
+    try:
+        return {"result": await sub_agent_service.run(task_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
 
 
 @app.get("/project-briefing", response_model=ProjectBriefing)

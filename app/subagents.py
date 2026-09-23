@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.providers.models import ModelMessage, ModelRequest
 from app.providers.registry import ProviderRegistry
 from app.tools.output_policy import sanitize_output
+from app.tools.registry import ToolRegistry
 
 PROFILES: dict[str, frozenset[str]] = {
     "researcher": frozenset({"knowledge.search", "knowledge.search_across_workspaces"}),
@@ -58,8 +59,10 @@ class SubAgentResult(BaseModel):
 
 
 class SubAgentService:
-    def __init__(self, database_path: str | Path, providers: ProviderRegistry | None = None) -> None:
-        self._path, self._providers = Path(database_path), providers
+    MAX_TOOL_CALLS = 3
+
+    def __init__(self, database_path: str | Path, providers: ProviderRegistry | None = None, tools: ToolRegistry | None = None) -> None:
+        self._path, self._providers, self._tools = Path(database_path), providers, tools
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self._path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS sub_agent_tasks (task_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT, created_at TEXT NOT NULL)")
@@ -98,3 +101,18 @@ class SubAgentService:
         with sqlite3.connect(self._path) as db:
             db.execute("UPDATE sub_agent_tasks SET result_json=? WHERE task_id=?", (result.model_dump_json(), task_id))
         return result
+
+    def use_tool(self, task_id: str, tool_name: str, arguments: dict) -> object:
+        record = self.get(task_id)
+        if record is None or self._tools is None:
+            raise ValueError("task not found")
+        task, result = record
+        if tool_name not in task.allowed_tools or result is not None:
+            raise ValueError("tool not allowed")
+        tool = self._tools.get(tool_name)
+        if tool.high_impact or tool.permission != "read":
+            raise ValueError("worker tool not allowed")
+        authorization = self._tools.authorize(tool_name, task.scope, task.parent_session_id)
+        if not self._tools.validate_authorization(authorization, tool_name, task.scope, task.parent_session_id):
+            raise ValueError("tool permission denied")
+        return sanitize_output(self._tools.execute(tool_name, **arguments))

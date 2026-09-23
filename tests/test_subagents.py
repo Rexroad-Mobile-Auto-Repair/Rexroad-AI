@@ -1,6 +1,7 @@
 import pytest
 
 from app.subagents import PROFILES, SubAgentService, SubAgentTaskCreate
+from app.tools.registry import ToolDefinition, ToolRegistry
 
 
 def test_profiles_are_narrow_and_task_persists(tmp_path):
@@ -25,3 +26,13 @@ async def test_provider_free_run_is_structured_and_safe(tmp_path):
     result = await service.run(task.task_id)
     assert result.status == "completed"
     assert result.safe_reason == "deterministic_stub"
+
+
+def test_worker_uses_only_read_profile_tools(tmp_path):
+    tools = ToolRegistry()
+    calls = []
+    tools.register(ToolDefinition(name="knowledge.search", description="read", permission="read", handler=lambda: calls.append(1) or {"token": "hidden", "ok": 1}))
+    service = SubAgentService(tmp_path / "state.sqlite3", tools=tools)
+    task = service.create(SubAgentTaskCreate(worker_profile="researcher", scope="s", instruction="read", allowed_tools=["knowledge.search"]))
+    assert service.use_tool(task.task_id, "knowledge.search", {}) == {"token": "[redacted]", "ok": 1}
+    assert calls == [1]
