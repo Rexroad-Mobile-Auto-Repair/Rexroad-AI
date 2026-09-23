@@ -266,6 +266,10 @@ def build_tool_registry(
     if plans is not None:
         plan_tools = PlanTools(plans)
         registry.register(ToolDefinition(
+            name="plan.create", description="Create an explicit ordered plan without executing it.", permission="plan_create", handler=plan_tools.create,
+            parameters={"type": "object", "properties": {"scope": {"type": "string"}, "goal": {"type": "string"}, "workspace": {"type": ["string", "null"]}, "steps": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"type": "object", "properties": {"title": {"type": "string"}, "metadata": {"type": "object"}}, "required": ["title"], "additionalProperties": False}}}, "required": ["scope", "goal", "steps"], "additionalProperties": False},
+        ))
+        registry.register(ToolDefinition(
             name="plan.list", description="List persisted plans in one explicit scope.", permission="read", handler=plan_tools.list,
             parameters={"type": "object", "properties": {"scope": {"type": "string"}, "status": {"type": ["string", "null"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}}, "required": ["scope"], "additionalProperties": False},
         ))

@@ -28,6 +28,20 @@ def test_plan_tools_read_and_update_with_scope_and_references(tmp_path: Path) ->
     assert tools.next_step("a", plan.id)["status"] == "in_progress"
 
 
+def test_plan_create_is_explicit_ordered_and_bounded(tmp_path: Path) -> None:
+    service = PlanService(tmp_path / "plans.sqlite3")
+    tools = PlanTools(service)
+    created = tools.create("a", "ship", [{"title": "one"}, {"title": "two"}], "repo")
+    assert [step["position"] for step in created["steps"]] == [0, 1]
+    assert created["workspace"] == "repo"
+    with pytest.raises(ValueError):
+        tools.create("a", "", [{"title": "one"}])
+    with pytest.raises(ValueError):
+        tools.create("a", "ship", [])
+    with pytest.raises(ValueError):
+        tools.create("a", "ship", [{"title": str(i)} for i in range(51)])
+
+
 def test_plan_tools_scope_and_transition_errors(tmp_path: Path) -> None:
     service, plan = make_plan(tmp_path)
     tools = PlanTools(service)
@@ -43,7 +57,8 @@ def test_registry_contains_only_controlled_plan_surface(tmp_path: Path) -> None:
     root.mkdir()
     service, _ = make_plan(tmp_path)
     registry = build_tool_registry(ReadOnlyFilesystem(WorkspaceRegistry({"repo": root})), ReadOnlyGit(WorkspaceRegistry({"repo": root})), plans=service)
-    assert {name for name in registry.names() if name.startswith("plan.")} == {"plan.list", "plan.get", "plan.next_step", "plan.update_step"}
+    assert {name for name in registry.names() if name.startswith("plan.")} == {"plan.create", "plan.list", "plan.get", "plan.next_step", "plan.update_step"}
+    assert registry.get("plan.create").permission == "plan_create"
     assert registry.get("plan.list").permission == "read"
     assert registry.get("plan.update_step").permission == "plan_write"
     assert "plan.execute" not in registry.names()

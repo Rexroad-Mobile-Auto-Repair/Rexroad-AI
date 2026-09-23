@@ -34,6 +34,13 @@ class PlanCreate(BaseModel):
             raise ValueError("plan text must be nonblank and single-line")
         return value
 
+    @field_validator("steps")
+    @classmethod
+    def valid_steps(cls, value: list[PlanStepCreate]) -> list[PlanStepCreate]:
+        if not value or len(value) > 50:
+            raise ValueError("plan must contain between 1 and 50 steps")
+        return value
+
 
 class PlanStep(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))

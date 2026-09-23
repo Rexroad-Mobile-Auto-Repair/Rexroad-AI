@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.plans.models import StepStatus
+from app.plans.models import PlanCreate, PlanStepCreate, StepStatus
 from app.plans.service import PlanService
 
 
@@ -15,6 +15,15 @@ class PlanTools:
         if status is not None:
             plans = [plan for plan in plans if plan.status == status]
         return [plan.model_dump(mode="json") for plan in plans]
+
+    def create(self, scope: str, goal: str, steps: list[dict[str, Any]], workspace: str | None = None) -> dict[str, Any]:
+        plan = self._plans.create(PlanCreate(
+            scope=scope,
+            goal=goal,
+            workspace=workspace,
+            steps=[PlanStepCreate(**step) for step in steps],
+        ))
+        return plan.model_dump(mode="json")
 
     def get(self, scope: str, plan_id: str) -> dict[str, Any]:
         plan = self._plans.get(plan_id, scope)
