@@ -114,6 +114,8 @@ class SupervisorDispatchRequest(BaseModel):
     parent_session_id: str | None = None
     plan_id: str | None = None
     step_id: str | None = None
+    mode: str = "one_shot"
+    max_tool_calls: int = Field(default=3, ge=1, le=5)
 
 
 class SupervisorDispatchAudit(BaseModel):
@@ -133,6 +135,8 @@ class SupervisorDispatchAudit(BaseModel):
     created_at: datetime
     completed_at: datetime | None = None
     tool_usage: list[dict] = Field(default_factory=list)
+    mode: str = "one_shot"
+    max_tool_calls: int = 3
 
 
 class SubAgentService:
@@ -147,10 +151,14 @@ class SubAgentService:
             db.execute("CREATE TABLE IF NOT EXISTS sub_agent_tasks (task_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT, created_at TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS sub_agent_reviews (task_id TEXT PRIMARY KEY, scope TEXT NOT NULL, status TEXT NOT NULL, reviewer_session_id TEXT, note TEXT, reviewed_at TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS sub_agent_incorporations (incorporation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, scope TEXT NOT NULL, workspace TEXT, target_type TEXT NOT NULL, target_id TEXT NOT NULL, parent_session_id TEXT, plan_id TEXT, step_id TEXT, status TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL, UNIQUE(task_id, scope, target_type, target_id))")
-            db.execute("CREATE TABLE IF NOT EXISTS supervisor_dispatch_audits (dispatch_id TEXT PRIMARY KEY, task_id TEXT, scope TEXT NOT NULL, workspace TEXT, recommendation_category TEXT NOT NULL, recommended_profile TEXT, authorized_profile TEXT, parent_session_id TEXT, plan_id TEXT, step_id TEXT, instruction_fingerprint TEXT NOT NULL, status TEXT NOT NULL, safe_reason TEXT, created_at TEXT NOT NULL, completed_at TEXT, tool_usage_json TEXT NOT NULL DEFAULT '[]')")
+            db.execute("CREATE TABLE IF NOT EXISTS supervisor_dispatch_audits (dispatch_id TEXT PRIMARY KEY, task_id TEXT, scope TEXT NOT NULL, workspace TEXT, recommendation_category TEXT NOT NULL, recommended_profile TEXT, authorized_profile TEXT, parent_session_id TEXT, plan_id TEXT, step_id TEXT, instruction_fingerprint TEXT NOT NULL, status TEXT NOT NULL, safe_reason TEXT, created_at TEXT NOT NULL, completed_at TEXT, tool_usage_json TEXT NOT NULL DEFAULT '[]', mode TEXT NOT NULL DEFAULT 'one_shot', max_tool_calls INTEGER NOT NULL DEFAULT 3)")
             columns = {row[1] for row in db.execute("PRAGMA table_info(supervisor_dispatch_audits)")}
             if "tool_usage_json" not in columns:
                 db.execute("ALTER TABLE supervisor_dispatch_audits ADD COLUMN tool_usage_json TEXT NOT NULL DEFAULT '[]'")
+            if "mode" not in columns:
+                db.execute("ALTER TABLE supervisor_dispatch_audits ADD COLUMN mode TEXT NOT NULL DEFAULT 'one_shot'")
+            if "max_tool_calls" not in columns:
+                db.execute("ALTER TABLE supervisor_dispatch_audits ADD COLUMN max_tool_calls INTEGER NOT NULL DEFAULT 3")
 
     def create(self, request: SubAgentTaskCreate) -> SubAgentTask:
         if request.worker_profile not in PROFILES or not request.scope.strip() or not set(request.allowed_tools) <= PROFILES[request.worker_profile]:
@@ -162,6 +170,8 @@ class SubAgentService:
         return task
 
     def authorize_dispatch(self, request: SupervisorDispatchRequest) -> DispatchAuthorization:
+        if request.mode not in {"one_shot", "provider_loop"}:
+            raise ValueError("invalid dispatch mode")
         recommendation = self._policy.recommend(SupervisorRecommendationRequest(instruction=request.instruction, scope=request.scope, workspace=request.workspace))
         if recommendation.action != "delegate" or recommendation.profile != request.worker_profile:
             raise ValueError("profile does not match recommendation")
@@ -180,9 +190,9 @@ class SubAgentService:
         dispatch_id = str(uuid4())
         created = datetime.now(UTC)
         with sqlite3.connect(self._path) as db:
-            db.execute("INSERT INTO supervisor_dispatch_audits VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', NULL, ?, NULL, '[]')", (dispatch_id, request.scope, request.workspace, recommendation.category, recommendation.profile, request.worker_profile, request.parent_session_id, request.plan_id, request.step_id, authorization.fingerprint, created.isoformat()))
+            db.execute("INSERT INTO supervisor_dispatch_audits (dispatch_id, task_id, scope, workspace, recommendation_category, recommended_profile, authorized_profile, parent_session_id, plan_id, step_id, instruction_fingerprint, status, safe_reason, created_at, completed_at, tool_usage_json, mode, max_tool_calls) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', NULL, ?, NULL, '[]', ?, ?)", (dispatch_id, request.scope, request.workspace, recommendation.category, recommendation.profile, request.worker_profile, request.parent_session_id, request.plan_id, request.step_id, authorization.fingerprint, created.isoformat(), request.mode, request.max_tool_calls))
         task = self.create(SubAgentTaskCreate(**request.model_dump()))
-        result = await self.run(task.task_id)
+        result = await self.run_with_tools(task.task_id, dispatch_id, "openai_compatible", "default", request.max_tool_calls) if request.mode == "provider_loop" else await self.run(task.task_id)
         with sqlite3.connect(self._path) as db:
             db.execute("UPDATE supervisor_dispatch_audits SET task_id=?, status=?, safe_reason=?, completed_at=? WHERE dispatch_id=?", (task.task_id, result.status, result.safe_reason, result.completed_at.isoformat(), dispatch_id))
         return result
@@ -192,7 +202,7 @@ class SubAgentService:
             raise ValueError("invalid audit query")
         with sqlite3.connect(self._path) as db:
             rows = db.execute("SELECT * FROM supervisor_dispatch_audits WHERE scope=? ORDER BY created_at DESC, dispatch_id DESC LIMIT ?", (scope, limit)).fetchall()
-        return [SupervisorDispatchAudit(dispatch_id=r[0], task_id=r[1], scope=r[2], workspace=r[3], recommendation_category=r[4], recommended_profile=r[5], authorized_profile=r[6], parent_session_id=r[7], plan_id=r[8], step_id=r[9], instruction_fingerprint=r[10], status=r[11], safe_reason=r[12], created_at=datetime.fromisoformat(r[13]), completed_at=datetime.fromisoformat(r[14]) if r[14] else None, tool_usage=json.loads(r[15])) for r in rows]
+        return [SupervisorDispatchAudit(dispatch_id=r[0], task_id=r[1], scope=r[2], workspace=r[3], recommendation_category=r[4], recommended_profile=r[5], authorized_profile=r[6], parent_session_id=r[7], plan_id=r[8], step_id=r[9], instruction_fingerprint=r[10], status=r[11], safe_reason=r[12], created_at=datetime.fromisoformat(r[13]), completed_at=datetime.fromisoformat(r[14]) if r[14] else None, tool_usage=json.loads(r[15]), mode=r[16], max_tool_calls=r[17]) for r in rows]
 
     def audit(self, dispatch_id: str, scope: str) -> SupervisorDispatchAudit | None:
         return next((item for item in self.audits(scope, 100) if item.dispatch_id == dispatch_id), None)

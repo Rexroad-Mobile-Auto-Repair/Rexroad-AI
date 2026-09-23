@@ -140,3 +140,12 @@ async def test_bounded_provider_tool_loop_sanitizes_and_records_usage(tmp_path):
     assert result.status == "completed"
     assert service.audit("d", "s").tool_usage[0]["status"] == "success"
     assert "secret" not in service.audit("d", "s").model_dump_json()
+
+
+def test_dispatch_mode_and_budget_are_bound(tmp_path):
+    service = SubAgentService(tmp_path / "state.sqlite3")
+    request = SupervisorDispatchRequest(worker_profile="researcher", scope="s", instruction="research", mode="provider_loop", max_tool_calls=1)
+    auth = service.authorize_dispatch(request)
+    assert auth.fingerprint == service.authorize_dispatch(request).fingerprint
+    with pytest.raises(ValueError):
+        SupervisorDispatchRequest(worker_profile="researcher", scope="s", instruction="research", mode="provider_loop", max_tool_calls=6)
