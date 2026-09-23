@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.journal.store import ActionJournal
 from app.plans.service import PlanService
-from app.tools.registry import ToolRegistry
+from app.tools.registry import ToolAuthorization, ToolRegistry
 
 
 class PlanExecutionError(RuntimeError):
@@ -26,6 +26,7 @@ class PlanExecutionCoordinator:
         plan_id: str,
         step_id: str,
         tool_name: str,
+        authorization: ToolAuthorization,
         arguments: dict[str, Any],
         verify: Callable[[Any], bool] | None = None,
         session_id: str | None = None,
@@ -41,7 +42,7 @@ class PlanExecutionCoordinator:
         if step.status != "pending" or self._plans.next_step(plan_id, scope).id != step_id:
             raise PlanExecutionError("step is not actionable")
         tool = self._tools.get(tool_name)
-        if tool.permission != "read":
+        if not self._tools.validate_authorization(authorization, tool_name, scope, session_id):
             raise PlanExecutionError("tool permission denied")
         trace_id = str(uuid4())
         self._plans.transition(plan_id, step_id, "in_progress", scope, trace_id)
