@@ -3,6 +3,12 @@ from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentService
+from app.coding_workflows import (
+    CodingWorkflow,
+    CodingWorkflowCreate,
+    CodingWorkflowService,
+    PatchAction,
+)
 from app.config import Settings
 from app.diagnostics.models import DoctorReport
 from app.diagnostics.service import build_local_diagnostics
@@ -110,6 +116,7 @@ project_state_service = ProjectStateService(workspace_registry, git, memory_serv
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
 project_history_service = ProjectStateHistoryService(project_state_service, ProjectSnapshotStore(settings.action_journal_path))
 sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry, WorkerModelRouter(settings, provider_registry))
+coding_workflow_service = CodingWorkflowService(settings.action_journal_path, workspace_registry, git, sub_agent_service, plan_service, execution_spec_service, execution_bridge, plan_execution, tool_registry)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 supervisor_policy = SupervisorPolicy()
 
@@ -671,5 +678,37 @@ async def cancel_plan(plan_id: str, scope: str) -> ProjectPlan:
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan not found")
     return plan
+
+
+@app.post("/supervisor-workflows/coding", response_model=CodingWorkflow)
+async def create_coding_workflow(request: CodingWorkflowCreate) -> CodingWorkflow:
+    try:
+        return coding_workflow_service.create(request)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid coding workflow request") from exc
+
+
+@app.get("/supervisor-coding-workflows/{workflow_id}", response_model=CodingWorkflow)
+async def get_coding_workflow(workflow_id: str, scope: str) -> CodingWorkflow:
+    item = coding_workflow_service.get(workflow_id, scope)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Coding workflow not found")
+    return item
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/start-analysis", response_model=CodingWorkflow)
+async def start_coding_analysis(workflow_id: str, scope: str) -> CodingWorkflow:
+    try:
+        return await coding_workflow_service.start_analysis(workflow_id, scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Coding analysis unavailable") from exc
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/prepare", response_model=CodingWorkflow)
+async def prepare_coding_implementation(workflow_id: str, scope: str, patches: list[PatchAction]) -> CodingWorkflow:
+    try:
+        return coding_workflow_service.prepare(workflow_id, scope, patches)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=409, detail="Implementation preparation unavailable") from exc
 
 
