@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
+from app.journal.store import ActionJournal
 from app.plans.service import PlanService
 from app.tools.registry import ToolRegistry
 
@@ -13,9 +14,10 @@ class PlanExecutionError(RuntimeError):
 
 
 class PlanExecutionCoordinator:
-    def __init__(self, plans: PlanService, tools: ToolRegistry) -> None:
+    def __init__(self, plans: PlanService, tools: ToolRegistry, journal: ActionJournal | None = None) -> None:
         self._plans = plans
         self._tools = tools
+        self._journal = journal
 
     def execute_once(
         self,
@@ -26,6 +28,7 @@ class PlanExecutionCoordinator:
         tool_name: str,
         arguments: dict[str, Any],
         verify: Callable[[Any], bool] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         plan = self._plans.get(plan_id, scope)
         if plan is None:
@@ -47,9 +50,21 @@ class PlanExecutionCoordinator:
             if verify is not None and not verify(result):
                 raise PlanExecutionError("verification failed")
         except Exception as exc:
+            if self._journal is not None and session_id is not None:
+                self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
+                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id},
+                                     status="error", error="verification failed" if isinstance(exc, PlanExecutionError) else "tool execution failed")
             self._plans.transition(plan_id, step_id, "failed", scope, trace_id)
             if isinstance(exc, PlanExecutionError):
                 raise
             raise PlanExecutionError("tool execution failed") from exc
-        self._plans.transition(plan_id, step_id, "completed", scope, trace_id)
+        try:
+            if self._journal is not None and session_id is not None:
+                self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
+                                     permission=tool.permission, arguments={"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id},
+                                     status="success", result_preview=str(result)[:1000])
+            self._plans.transition(plan_id, step_id, "completed", scope, trace_id)
+        except Exception as exc:
+            self._plans.transition(plan_id, step_id, "failed", scope, trace_id)
+            raise PlanExecutionError("execution journal failed") from exc
         return {"trace_id": trace_id, "tool": tool_name, "result": result}

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from app.journal.store import ActionJournal
 from app.plans.execution import PlanExecutionCoordinator, PlanExecutionError
 from app.plans.models import PlanCreate, PlanStepCreate
 from app.plans.service import PlanService
@@ -50,3 +51,20 @@ def test_tool_and_verification_failures_mark_step_failed(tmp_path: Path) -> None
     plan2 = plans.create(PlanCreate(scope="a", goal="x", steps=[PlanStepCreate(title="one")]))
     with pytest.raises(PlanExecutionError, match="verification failed"):
         coordinator.execute_once(scope="a", plan_id=plan2.id, step_id=plan2.steps[0].id, tool_name="safe.read", arguments={"value": "x"}, verify=lambda _: False)
+
+
+def test_execution_journal_preserves_linkage_and_failure_safety(tmp_path: Path, monkeypatch) -> None:
+    plans, plan, coordinator = setup_plan(tmp_path)
+    journal = ActionJournal(tmp_path / "journal.sqlite3")
+    coordinator = PlanExecutionCoordinator(plans, coordinator._tools, journal)
+    result = coordinator.execute_once(scope="a", plan_id=plan.id, step_id=plan.steps[0].id, tool_name="safe.read", arguments={"value": "x"}, session_id="session-1")
+    entry = journal.list_session("session-1")[0]
+    assert entry.status == "success"
+    assert entry.arguments["plan_id"] == plan.id
+    assert entry.arguments["step_id"] == plan.steps[0].id
+    assert entry.arguments["trace_id"] == result["trace_id"]
+    monkeypatch.setattr(journal, "record", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("secret")))
+    second = plans.create(PlanCreate(scope="a", goal="second", steps=[PlanStepCreate(title="one")]))
+    with pytest.raises(PlanExecutionError, match="execution journal failed"):
+        coordinator.execute_once(scope="a", plan_id=second.id, step_id=second.steps[0].id, tool_name="safe.read", arguments={"value": "x"}, session_id="session-2")
+    assert plans.get(second.id, "a").steps[0].status == "failed"
