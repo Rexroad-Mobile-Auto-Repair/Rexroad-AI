@@ -25,6 +25,7 @@ from app.plans.specs import ExecutionSpec, ExecutionSpecService
 from app.plans.traces import ExecutionTrace, ExecutionTraceService
 from app.policy.factory import build_workspace_registry
 from app.policy.workspaces import WorkspaceInfo
+from app.project_briefing import ProjectBriefing, ProjectBriefingService
 from app.project_state import ProjectState, ProjectStateService
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
@@ -76,6 +77,7 @@ execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
 plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal)
 execution_trace_service = ExecutionTraceService(action_journal)
 project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
+project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
 
 agent_service = AgentService(
     settings,
@@ -371,6 +373,14 @@ async def get_project_state(workspace: str, scope: str) -> ProjectState:
         return project_state_service.get(workspace, scope)
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=404, detail="Project state not found") from exc
+
+
+@app.get("/project-briefing", response_model=ProjectBriefing)
+async def get_project_briefing(workspace: str, scope: str, provider: str | None = None) -> ProjectBriefing:
+    try:
+        return await project_briefing_service.generate(workspace, scope, provider)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=404, detail="Project briefing not found") from exc
 
 
 @app.get("/plans", response_model=list[ProjectPlan])
