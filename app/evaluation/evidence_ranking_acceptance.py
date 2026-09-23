@@ -99,3 +99,17 @@ class EvidenceRankingAcceptanceRunner:
         excluded_reason = None if selected_position else ("target_not_current" if freshness != "current" else "target_not_selected_limit")
         status = "prerequisite_unavailable" if freshness != "current" else "observed"
         return EvidenceRankingAcceptanceResult(case_id=case.case_id, status=status, repeatable=True, target_found=True, raw_position=raw_position, planned_position=planned_position, raw_rank=target.raw_rank, planned_rank=target.planned_rank, candidate_position=first.candidates.index(target) + 1, ranked_position=ranked_target.ranked_position, selected_position=selected_position, freshness=freshness, found_by=target.found_by, rank_score=ranked_target.rank_score, safe_reason=excluded_reason)
+
+
+async def run_benchmark_suite(cases, retriever, ranker: EvidenceRanker | None = None, selector: EvidenceSelector | None = None, suite_id: str = "evidence-ranking") -> dict:
+    results = [await EvidenceRankingAcceptanceRunner(retriever, ranker, selector).run_case(case) for case in cases]
+    return {
+        "suite_id": suite_id,
+        "total": len(results),
+        "results": results,
+        "raw_found": sum(result.raw_position is not None for result in results),
+        "planned_found": sum(result.planned_position is not None for result in results),
+        "candidate_found": sum(result.candidate_position is not None for result in results),
+        "ranked_found": sum(result.ranked_position is not None for result in results),
+        "selected_found": sum(result.selected_position is not None for result in results),
+    }
