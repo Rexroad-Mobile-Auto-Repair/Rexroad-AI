@@ -38,6 +38,7 @@ from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
 from app.subagents import (
     SubAgentContribution,
+    SubAgentIncorporation,
     SubAgentReview,
     SubAgentService,
     SubAgentTask,
@@ -446,6 +447,30 @@ async def get_sub_agent_contribution(task_id: str, scope: str) -> SubAgentContri
         return sub_agent_service.contribution(task_id, scope)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Contribution unavailable") from exc
+
+
+@app.post("/sub-agent-contributions/{task_id}/incorporate", response_model=SubAgentIncorporation)
+async def incorporate_sub_agent(task_id: str, scope: str, target_type: str, target_id: str, reviewer_session_id: str | None = None, note: str | None = None) -> SubAgentIncorporation:
+    try:
+        return sub_agent_service.incorporate(task_id, scope, target_type, target_id, note, reviewer_session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Contribution unavailable") from exc
+
+
+@app.get("/sub-agent-incorporations/{incorporation_id}", response_model=SubAgentIncorporation)
+async def get_sub_agent_incorporation(incorporation_id: str, scope: str) -> SubAgentIncorporation:
+    item = sub_agent_service.get_incorporation(incorporation_id, scope)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Incorporation not found")
+    return item
+
+
+@app.post("/sub-agent-incorporations/{incorporation_id}/revoke", response_model=SubAgentIncorporation)
+async def revoke_sub_agent_incorporation(incorporation_id: str, scope: str) -> SubAgentIncorporation:
+    try:
+        return sub_agent_service.revoke_incorporation(incorporation_id, scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Incorporation not found") from exc
 
 
 @app.get("/project-briefing", response_model=ProjectBriefing)

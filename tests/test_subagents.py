@@ -57,6 +57,22 @@ async def test_reject_and_scope_or_self_review_are_safe(tmp_path):
         service.contribution(task.task_id, "s")
 
 
+@pytest.mark.asyncio
+async def test_explicit_incorporation_is_scoped_idempotent_and_revocable(tmp_path):
+    service = SubAgentService(tmp_path / "state.sqlite3")
+    task = service.create(SubAgentTaskCreate(worker_profile="researcher", scope="s", instruction="find", parent_session_id="worker"))
+    await service.run(task.task_id)
+    service.review(task.task_id, "s", "accepted", "supervisor")
+    item = service.incorporate(task.task_id, "s", "research", "r1", reviewer_session_id="supervisor")
+    assert service.incorporate(task.task_id, "s", "research", "r1").incorporation_id == item.incorporation_id
+    assert service.incorporated_contribution(item.incorporation_id, "s").task_id == task.task_id
+    revoked = service.revoke_incorporation(item.incorporation_id, "s")
+    assert revoked.status == "revoked"
+    with pytest.raises(ValueError):
+        service.incorporated_contribution(item.incorporation_id, "s")
+    assert service.get_incorporation(item.incorporation_id, "s").status == "revoked"
+
+
 def test_worker_uses_only_read_profile_tools(tmp_path):
     tools = ToolRegistry()
     calls = []

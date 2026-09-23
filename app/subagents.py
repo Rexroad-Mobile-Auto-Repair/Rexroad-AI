@@ -81,6 +81,21 @@ class SubAgentContribution(BaseModel):
     accepted_at: datetime
 
 
+class SubAgentIncorporation(BaseModel):
+    incorporation_id: str
+    task_id: str
+    scope: str
+    workspace: str | None
+    target_type: str
+    target_id: str
+    parent_session_id: str | None
+    plan_id: str | None
+    step_id: str | None
+    status: str
+    note: str | None
+    created_at: datetime
+
+
 class SubAgentService:
     MAX_TOOL_CALLS = 3
 
@@ -90,6 +105,7 @@ class SubAgentService:
         with sqlite3.connect(self._path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS sub_agent_tasks (task_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT, created_at TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS sub_agent_reviews (task_id TEXT PRIMARY KEY, scope TEXT NOT NULL, status TEXT NOT NULL, reviewer_session_id TEXT, note TEXT, reviewed_at TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS sub_agent_incorporations (incorporation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, scope TEXT NOT NULL, workspace TEXT, target_type TEXT NOT NULL, target_id TEXT NOT NULL, parent_session_id TEXT, plan_id TEXT, step_id TEXT, status TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL, UNIQUE(task_id, scope, target_type, target_id))")
 
     def create(self, request: SubAgentTaskCreate) -> SubAgentTask:
         if request.worker_profile not in PROFILES or not request.scope.strip() or not set(request.allowed_tools) <= PROFILES[request.worker_profile]:
@@ -153,6 +169,38 @@ class SubAgentService:
         if record is None or review is None or reviewed is None or reviewed.status != "accepted" or record.scope != scope:
             raise ValueError("contribution unavailable")
         return SubAgentContribution(task_id=task_id, worker_profile=record.worker_profile, scope=scope, workspace=record.workspace, summary=review.summary[:4000], references=review.references[:20], tool_usage=review.tool_usage[:20], parent_session_id=record.parent_session_id, plan_id=record.plan_id, step_id=record.step_id, accepted_at=reviewed.reviewed_at)
+
+    def incorporate(self, task_id: str, scope: str, target_type: str, target_id: str, note: str | None = None, reviewer_session_id: str | None = None) -> SubAgentIncorporation:
+        contribution = self.contribution(task_id, scope)
+        if reviewer_session_id and reviewer_session_id == contribution.parent_session_id or target_type not in {"research"} or not target_id:
+            raise ValueError("invalid incorporation")
+        with sqlite3.connect(self._path) as db:
+            row = db.execute("SELECT * FROM sub_agent_incorporations WHERE task_id=? AND scope=? AND target_type=? AND target_id=?", (task_id, scope, target_type, target_id)).fetchone()
+            if row:
+                return SubAgentIncorporation(incorporation_id=row[0], task_id=row[1], scope=row[2], workspace=row[3], target_type=row[4], target_id=row[5], parent_session_id=row[6], plan_id=row[7], step_id=row[8], status=row[9], note=row[10], created_at=datetime.fromisoformat(row[11]))
+            now = datetime.now(UTC)
+            incorporation = SubAgentIncorporation(incorporation_id=str(uuid4()), task_id=task_id, scope=scope, workspace=contribution.workspace, target_type=target_type, target_id=target_id, parent_session_id=contribution.parent_session_id, plan_id=contribution.plan_id, step_id=contribution.step_id, status="active", note=note[:1000] if note else None, created_at=now)
+            db.execute("INSERT INTO sub_agent_incorporations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (incorporation.incorporation_id, incorporation.task_id, incorporation.scope, incorporation.workspace, incorporation.target_type, incorporation.target_id, incorporation.parent_session_id, incorporation.plan_id, incorporation.step_id, incorporation.status, incorporation.note, incorporation.created_at.isoformat()))
+            return incorporation
+
+    def get_incorporation(self, incorporation_id: str, scope: str) -> SubAgentIncorporation | None:
+        with sqlite3.connect(self._path) as db:
+            row = db.execute("SELECT * FROM sub_agent_incorporations WHERE incorporation_id=? AND scope=?", (incorporation_id, scope)).fetchone()
+        return SubAgentIncorporation(incorporation_id=row[0], task_id=row[1], scope=row[2], workspace=row[3], target_type=row[4], target_id=row[5], parent_session_id=row[6], plan_id=row[7], step_id=row[8], status=row[9], note=row[10], created_at=datetime.fromisoformat(row[11])) if row else None
+
+    def revoke_incorporation(self, incorporation_id: str, scope: str) -> SubAgentIncorporation:
+        item = self.get_incorporation(incorporation_id, scope)
+        if item is None:
+            raise ValueError("incorporation not found")
+        with sqlite3.connect(self._path) as db:
+            db.execute("UPDATE sub_agent_incorporations SET status='revoked' WHERE incorporation_id=? AND scope=?", (incorporation_id, scope))
+        return item.model_copy(update={"status": "revoked"})
+
+    def incorporated_contribution(self, incorporation_id: str, scope: str) -> SubAgentContribution:
+        item = self.get_incorporation(incorporation_id, scope)
+        if item is None or item.status != "active":
+            raise ValueError("incorporation unavailable")
+        return self.contribution(item.task_id, scope)
 
     def use_tool(self, task_id: str, tool_name: str, arguments: dict) -> object:
         record = self.get(task_id)

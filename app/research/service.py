@@ -77,6 +77,8 @@ class ResearchService:
             try:
                 for contribution_id in sorted(set(request.contribution_ids)):
                     contributions.append(self._subagents.contribution(contribution_id, request.workspace))
+                for incorporation_id in sorted(set(request.incorporation_ids)):
+                    contributions.append(self._subagents.incorporated_contribution(incorporation_id, request.workspace))
             except ValueError:
                 return ResearchAnswer(status="context_error", research_id=research_id)
         try:
