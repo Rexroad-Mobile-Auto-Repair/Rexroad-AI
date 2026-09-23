@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app import main
+from app.coding_actions import CodingJobActionRequest
 from app.coding_guidance import CodingGuidanceService
 from app.coding_jobs import CodingJobService
 from app.coding_proposals import CodingProposalService
@@ -36,3 +37,14 @@ def test_guidance_api_is_scoped(monkeypatch, tmp_path: Path) -> None:
     client = TestClient(main.app)
     assert client.get(f"/supervisor-coding-workflows/{workflow.workflow_id}/guidance", params={"scope": "s"}).status_code == 200
     assert client.get(f"/supervisor-coding-workflows/{workflow.workflow_id}/guidance", params={"scope": "other"}).status_code == 404
+
+
+def test_guidance_action_registry_matches_supervisor_action_registry() -> None:
+    actions = set(CodingJobActionRequest.model_json_schema()["properties"]["action"]["enum"])
+    supported = {
+        "start_analysis", "review_analysis", "create_proposal", "review_proposal",
+        "request_revision", "convert_proposal", "review_specs", "request_patch_approval",
+        "review_patch_approvals", "execute_patches", "execute_checks", "start_verifier",
+        "review_verifier",
+    }
+    assert actions == supported

@@ -24,6 +24,7 @@ class CodingJobGuidance(BaseModel):
     will_do: list[str] = Field(default_factory=list)
     will_not_do: list[str] = Field(default_factory=list)
     confirmation_required: bool
+    high_impact: bool = False
     blocking_reason: str | None = None
     safe_parameters: dict[str, Any] = Field(default_factory=dict)
     observed_at: datetime
@@ -49,40 +50,70 @@ class CodingGuidanceService:
         safe: dict[str, Any] = {}
         will_do: list[str] = []
         will_not = ["continue automatically", "commit or push Git", "write memory or Knowledge"]
+        high_impact = action == "execute_patches"
         if action == "start_analysis":
             explanation = "Dispatch the read-only code analyst for the current objective."
             will_do = ["dispatch one code analyst task"]
             will_not += ["review the analyst result", "create a proposal"]
         elif action == "review_analysis":
-            safe = {"decision": "<required: accept|reject>"}; will_do = ["record the explicit analyst review decision"]; will_not += ["create a proposal", "execute tools"]
+            safe = {"decision": "<required: accept|reject>"}
+            will_do = ["record the explicit analyst review decision"]
+            will_not += ["create a proposal", "execute tools"]
         elif action == "create_proposal":
-            safe = {"proposal": "<required ProposalCreate input>"}; will_do = ["create one proposal in review state"]; will_not += ["accept or convert the proposal"]
+            safe = {"proposal": "<required ProposalCreate input>"}
+            will_do = ["create one proposal in review state"]
+            will_not += ["accept or convert the proposal"]
         elif action == "review_proposal":
-            safe = {"decision": "<required: accept|reject>", "note": "<optional bounded note>"}; will_do = ["record the proposal review decision"]; will_not += ["convert or execute the proposal"]
+            safe = {"decision": "<required: accept|reject>", "note": "<optional bounded note>"}
+            will_do = ["record the proposal review decision"]
+            will_not += ["convert or execute the proposal"]
         elif action == "request_revision":
-            safe = {"note": "<required bounded revision note>"}; will_do = ["dispatch one revision analyst task"]; will_not += ["materialize or accept a revised proposal"]
+            safe = {"note": "<required bounded revision note>"}
+            will_do = ["dispatch one revision analyst task"]
+            will_not += ["materialize or accept a revised proposal"]
         elif action == "convert_proposal":
-            preview = {"proposal_id": job.proposal_id, "revision": job.proposal_revision}; safe = {}; will_do = ["create the persisted plan and execution specs"]; will_not += ["review specs", "request approvals"]
+            preview = {"proposal_id": job.proposal_id, "revision": job.proposal_revision}
+            will_do = ["create the persisted plan and execution specs"]
+            will_not += ["review specs", "request approvals"]
         elif action == "review_specs":
-            preview = {"patch_count": len(job.patch_specs), "check_count": len(job.check_specs)}; safe = {"decision": "<required: accept|reject>"}; will_do = ["accept or reject generated specs"]; will_not += ["create approvals", "execute patches"]
+            preview = {"patch_count": len(job.patch_specs), "check_count": len(job.check_specs)}
+            safe = {"decision": "<required: accept|reject>"}
+            will_do = ["accept or reject generated specs"]
+            will_not += ["create approvals", "execute patches"]
         elif action == "request_patch_approval":
-            preview = {"patch_count": len(job.patch_specs), "files": resources}; safe = {}; will_do = ["create pending approval requests for ready patch specs"]; will_not += ["approve requests", "execute patches"]
+            preview = {"patch_count": len(job.patch_specs), "files": resources}
+            will_do = ["create pending approval requests for ready patch specs"]
+            will_not += ["approve requests", "execute patches"]
         elif action == "review_patch_approvals":
             pending = [item.approval_request_id for item in job.patch_specs if item.approval_status == "pending"]
             preview = {"pending_request_ids": pending[: self.MAX_ITEMS], "approved_count": sum(item.approval_status == "approved" for item in job.patch_specs)}
-            safe = {"approval_request_id": "<required>", "decision": "<required: accept|reject>"}; will_do = ["record one approval decision"]; will_not += ["execute patches", "mint a capability"]
+            safe = {"approval_request_id": "<required>", "decision": "<required: accept|reject>"}
+            will_do = ["record one approval decision"]
+            will_not += ["execute patches", "mint a capability"]
         elif action == "execute_patches":
-            preview = {"patch_count": len(job.patch_specs), "files": resources}; safe = {}; will_do = [f"execute {len(job.patch_specs)} approved filesystem patches", "record attempts and traces"]; will_not += ["run checks", "dispatch verifier"]
+            preview = {"patch_count": len(job.patch_specs), "files": resources}
+            will_do = [f"execute {len(job.patch_specs)} approved filesystem patches", "record attempts and traces"]
+            will_not += ["run checks", "dispatch verifier", "commit Git", "push Git", "retry automatically"]
         elif action == "execute_checks":
-            preview = {"checks": [item.check_id for item in job.check_specs[: self.MAX_ITEMS]], "targets": [item.result_summary.get("targets", []) if item.result_summary else [] for item in job.check_specs[: self.MAX_ITEMS]]}; safe = {}; will_do = ["run only registered workspace checks"]; will_not += ["run arbitrary commands", "dispatch verifier"]
+            targets = []
+            for item in job.check_specs[: self.MAX_ITEMS]:
+                if item.result_summary:
+                    targets.extend(str(target) for target in item.result_summary.get("targets", [])[: self.MAX_ITEMS])
+            preview = {"checks": [item.check_id for item in job.check_specs[: self.MAX_ITEMS]], "targets": targets[: self.MAX_ITEMS]}
+            will_do = ["run only registered workspace checks"]
+            will_not += ["run arbitrary commands", "dispatch verifier"]
         elif action == "start_verifier":
-            safe = {}; will_do = ["dispatch one read-only verifier task"]; will_not += ["accept the verifier result"]
+            will_do = ["dispatch one read-only verifier task"]
+            will_not += ["accept the verifier result"]
         elif action == "review_verifier":
-            preview = {"verifier_task_id": job.verifier_task_id, "review_status": job.verifier_review_status}; safe = {"decision": "<required: accept|reject>"}; will_do = ["record the explicit verifier review"]; will_not += ["run another worker"]
+            preview = {"verifier_task_id": job.verifier_task_id, "review_status": job.verifier_review_status}
+            safe = {"decision": "<required: accept|reject>"}
+            will_do = ["record the explicit verifier review"]
+            will_not += ["run another worker"]
         else:
             will_do = []
         blocked = job.blocked_reason
-        return CodingJobGuidance(workflow_id=job.workflow_id, scope=job.scope, workspace=job.workspace, job_status=job.status, next_action=action, action_available=job.next_action.allowed, headline=headline, explanation=explanation, why_now=job.next_action.reason[:500], affected_resources=resources[: self.MAX_ITEMS], prerequisites=job.next_action.references[: self.MAX_ITEMS], action_preview=preview, will_do=will_do[:10], will_not_do=will_not[:10], confirmation_required=confirmation, blocking_reason=blocked, safe_parameters=safe, observed_at=datetime.now(UTC))
+        return CodingJobGuidance(workflow_id=job.workflow_id, scope=job.scope, workspace=job.workspace, job_status=job.status, next_action=action, action_available=job.next_action.allowed, headline=headline, explanation=explanation, why_now=job.next_action.reason[:500], affected_resources=resources[: self.MAX_ITEMS], prerequisites=job.next_action.references[: self.MAX_ITEMS], action_preview=preview, will_do=will_do[:10], will_not_do=will_not[:10], confirmation_required=confirmation, high_impact=high_impact, blocking_reason=blocked, safe_parameters=safe, observed_at=datetime.now(UTC))
 
     @staticmethod
     def _resources(job: CodingJob) -> list[str]:
