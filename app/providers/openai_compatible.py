@@ -3,7 +3,7 @@ import json
 import httpx
 
 from app.providers.base import ModelProvider
-from app.providers.models import ModelRequest, ModelResponse
+from app.providers.models import ModelRequest, ModelResponse, ProviderStreamEvent
 from app.tools.models import ModelMessage, ToolCall, ToolSpec
 
 
@@ -135,6 +135,39 @@ class OpenAICompatibleProvider(ModelProvider):
             content=message.get("content") or "",
             tool_calls=tool_calls,
         )
+
+    async def stream(self, request: ModelRequest):
+        payload = {
+            "model": request.model,
+            "messages": [self._message_payload(message) for message in request.messages],
+            "temperature": request.temperature,
+            "stream": True,
+        }
+        if request.tools:
+            payload["tools"] = [self._tool_payload(tool) for tool in request.tools]
+        text = ""
+        async with httpx.AsyncClient(timeout=120.0) as client, client.stream("POST", f"{self._base_url}/chat/completions", json=payload, headers=self._headers()) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    value = line[5:].strip()
+                    if value == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(value)
+                    except json.JSONDecodeError:
+                        yield ProviderStreamEvent(type="provider_error", message="malformed provider stream")
+                        return
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    part = delta.get("content") or ""
+                    if part:
+                        text += part
+                        if len(text.encode("utf-8")) > 12000:
+                            yield ProviderStreamEvent(type="provider_error", message="provider response exceeded the size limit")
+                            return
+                        yield ProviderStreamEvent(type="text_delta", text=part)
+        yield ProviderStreamEvent(type="completed", response=ModelResponse(provider=self.name, model=request.model, content=text))
 
     async def health_check(self) -> bool:
         try:

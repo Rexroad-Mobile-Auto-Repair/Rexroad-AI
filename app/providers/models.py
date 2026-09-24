@@ -25,3 +25,10 @@ class ModelResponse(BaseModel):
     model: str
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
+
+
+class ProviderStreamEvent(BaseModel):
+    type: Literal["text_delta", "completed", "provider_error"]
+    text: str = ""
+    response: ModelResponse | None = None
+    message: str | None = None
