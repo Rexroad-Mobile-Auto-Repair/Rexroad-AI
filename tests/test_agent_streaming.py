@@ -1,11 +1,13 @@
 import asyncio
 import threading
 
+import httpx
 import pytest
 
 from app.agents.models import AgentQueryRequest
 from app.agents.service import AgentService
 from app.config import Settings
+from app.main import app
 from app.providers.base import ModelProvider
 from app.providers.models import ModelRequest, ModelResponse, ProviderStreamEvent
 from app.providers.registry import ProviderRegistry
@@ -81,3 +83,28 @@ async def test_tool_started_arrives_while_handler_is_blocked():
     release.set()
     assert (await anext(stream))["type"] == "tool_completed"
     assert (await anext(stream))["type"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_http_stream_does_not_turn_new_request_into_missing_session(monkeypatch):
+    import app.main as main_module
+
+    seen_requests = []
+
+    class FakeAgentService:
+        async def query_stream(self, request):
+            seen_requests.append(request)
+            yield {"type": "session", "session_id": "new-session"}
+            yield {"type": "text_delta", "text": "hello"}
+            yield {"type": "completed", "session_id": "new-session", "response": "hello"}
+
+    monkeypatch.setattr(main_module, "agent_service", FakeAgentService())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/agent/query/stream", json={"message": "hello"})
+
+    assert response.status_code == 200
+    assert "event: session" in response.text
+    assert "event: text_delta" in response.text
+    assert "event: completed" in response.text
+    assert seen_requests[0].session_id is None

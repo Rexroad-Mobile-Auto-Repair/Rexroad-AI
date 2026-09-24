@@ -1,5 +1,4 @@
 import json
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -425,11 +424,9 @@ def _stream_event(event_type: str, payload: dict) -> str:
 @app.post("/agent/query/stream")
 async def agent_query_stream(request: AgentQueryRequest) -> StreamingResponse:
     async def events():
-        session_id = request.session_id or str(uuid4())
-        bounded_request = request.model_copy(update={"session_id": session_id})
         yield _stream_event("status", {"message": "Working on your request"})
         try:
-            async for event in agent_service.query_stream(bounded_request):
+            async for event in agent_service.query_stream(request):
                 event_type = event.pop("type")
                 if event_type == "tool_started":
                     event = {"tool": event["tool"], "label": _STREAM_TOOL_LABELS.get(event["tool"], "Using a project tool")}
