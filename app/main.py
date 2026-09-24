@@ -1,5 +1,8 @@
+import json
+from uuid import uuid4
+
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
@@ -131,6 +134,7 @@ CHAT_HTML = CHAT_HTML.replace("currentSessionId=id;messages.innerHTML='';events.
 CHAT_HTML = CHAT_HTML.replace("$('new').onclick=()=>{currentSessionId=null;messages.innerHTML=", "$('new').onclick=()=>{currentSessionId=null;$('workspace').disabled=false;messages.innerHTML=")
 CHAT_HTML = CHAT_HTML.replace("body:JSON.stringify({message:text,workspace:$('workspace').value||null})", "body:JSON.stringify({message:text,session_id:currentSessionId,workspace:$('workspace').value||null})")
 CHAT_HTML = CHAT_HTML.replace("add('assistant',d.content||'');$('status')", "currentSessionId=d.session_id;add('assistant',d.content||'');$('status')")
+CHAT_HTML = CHAT_HTML.replace("</script></body></html>", """const oldSubmit=$('form').onsubmit;$('form').onsubmit=async e=>{e.preventDefault();if(busy)return;const text=$('input').value.trim();if(!text)return;busy=true;$('send').disabled=true;add('user',text);$('input').value='';let answer='';try{const r=await fetch('/agent/query/stream',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,session_id:currentSessionId,workspace:$('workspace').value||null})});if(!r.ok)throw Error('Request failed');const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const part=await reader.read();if(part.done)break;buffer+=decoder.decode(part.value,{stream:true});const chunks=buffer.split('\\n\\n');buffer=chunks.pop();for(const chunk of chunks){const line=chunk.split('\\n').find(x=>x.startsWith('data: '));if(!line)continue;const data=JSON.parse(line.slice(6)),type=chunk.split('\\n').find(x=>x.startsWith('event: '))?.slice(7);if(type==='session')currentSessionId=data.session_id;if(type==='status')$('status').textContent=data.message;if(type==='text_delta'){answer+=data.text;if(!messages.lastElementChild||!messages.lastElementChild.classList.contains('assistant'))add('assistant','');messages.lastElementChild.textContent=answer;}if(type==='completed'){answer=data.response;if(messages.lastElementChild?.classList.contains('assistant'))messages.lastElementChild.textContent=answer;}if(type==='error')throw Error(data.message);}}$('status').textContent='';load();}catch(err){$('status').textContent=err.message;}finally{busy=false;$('send').disabled=false;}};</script></body></html>""")
 
 settings = Settings()
 
@@ -401,6 +405,50 @@ async def agent_query(
         raise HTTPException(status_code=status, detail=str(exc)) from None
     except AgentLoopLimitError:
         raise HTTPException(status_code=422, detail="The request exceeded the bounded tool-use limit") from None
+
+
+_STREAM_TOOL_LABELS = {
+    "filesystem.list": "Inspecting project files",
+    "filesystem.read": "Reading project files",
+    "filesystem.search": "Searching project files",
+    "git.status": "Checking Git status",
+    "git.log": "Reading Git history",
+    "knowledge.search": "Searching project knowledge",
+    "workspace.run_check": "Running approved checks",
+}
+
+
+def _stream_event(event_type: str, payload: dict) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n\n"
+
+
+@app.post("/agent/query/stream")
+async def agent_query_stream(request: AgentQueryRequest) -> StreamingResponse:
+    async def events():
+        session_id = request.session_id or str(uuid4())
+        bounded_request = request.model_copy(update={"session_id": session_id})
+        yield _stream_event("session", {"session_id": session_id})
+        yield _stream_event("status", {"message": "Working on your request"})
+        try:
+            response = await agent_service.query(bounded_request)
+            for event in action_journal.list_events_for_session(response.session_id):
+                if event.event_type == "tool_call":
+                    tool_name = str(event.payload.get("tool", ""))
+                    yield _stream_event("status", {"message": _STREAM_TOOL_LABELS.get(tool_name, "Using a project tool")})
+                    yield _stream_event("tool_started", {"tool": tool_name})
+                elif event.event_type == "tool_result":
+                    tool_name = str(event.payload.get("tool", ""))
+                    yield _stream_event("tool_completed", {"tool": tool_name, "status": "completed"})
+            yield _stream_event("text_delta", {"text": response.content[:12000]})
+            yield _stream_event("completed", {"session_id": response.session_id, "response": response.content[:12000]})
+        except AgentSessionError as exc:
+            yield _stream_event("error", {"message": str(exc)[:200]})
+        except AgentLoopLimitError:
+            yield _stream_event("error", {"message": "The request exceeded the bounded tool-use limit"})
+        except Exception:  # noqa: BLE001 - streaming boundary returns safe failure
+            yield _stream_event("error", {"message": "The request could not be completed safely"})
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.get("/tool-approvals/{request_id}", response_model=ToolApprovalRequest)
