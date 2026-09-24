@@ -245,6 +245,24 @@ async def test_invalid_session_and_workspace_switch_fail_safely(tmp_path: Path) 
         await service.query(AgentQueryRequest(message="switch", session_id=first.session_id, workspace="acceptance_test"))
 
 
+@pytest.mark.asyncio
+async def test_workspace_bound_continuation_inherits_omitted_workspace(tmp_path: Path) -> None:
+    provider = HistoryProvider()
+    registry = ProviderRegistry()
+    registry.register(provider)
+    journal = ActionJournal(tmp_path / "journal.sqlite3")
+    service = AgentService(Settings(_env_file=None), registry, journal=journal)
+
+    first = await service.query(AgentQueryRequest(message="inspect", workspace="acceptance_test"))
+    second = await service.query(AgentQueryRequest(message="continue", session_id=first.session_id))
+
+    assert second.session_id == first.session_id
+    events = journal.list_events_for_session(first.session_id)
+    assert [event.payload["workspace"] for event in events if event.event_type == "user_request"] == [
+        "acceptance_test", "acceptance_test"
+    ]
+
+
 def test_event_payload_content_is_exactly_bounded(tmp_path: Path) -> None:
     journal = ActionJournal(tmp_path / "journal.sqlite3")
     content = "x" * (journal.EVENT_CONTENT_LIMIT + 37)

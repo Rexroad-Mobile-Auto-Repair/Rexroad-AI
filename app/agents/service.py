@@ -100,6 +100,7 @@ class AgentService:
         )
 
         session_id = request.session_id or str(uuid4())
+        workspace = request.workspace
         history: list[ModelMessage] = []
         if request.session_id:
             if self._journal is None or self._journal.get_session(session_id) is None:
@@ -107,7 +108,10 @@ class AgentService:
             prior = self._journal.list_events_for_session(session_id)
             first = next((event for event in prior if event.event_type == "user_request"), None)
             established_workspace = first.payload.get("workspace") if first else None
-            if established_workspace != request.workspace:
+            workspace_supplied = "workspace" in request.model_fields_set
+            if established_workspace and not workspace_supplied:
+                workspace = established_workspace
+            if established_workspace != workspace:
                 raise AgentSessionError("Workspace context cannot change during a session")
             history = self._history_messages(
                 self._journal,
@@ -119,15 +123,16 @@ class AgentService:
             self._journal.append_event(
                 session_id=session_id,
                 event_type="user_request",
-                payload={"content": request.message, "workspace": request.workspace},
+                payload={"content": request.message, "workspace": workspace},
             )
 
-        tool_specs = self._tool_specs_for_request(request)
+        effective_request = request.model_copy(update={"workspace": workspace})
+        tool_specs = self._tool_specs_for_request(effective_request)
         allowed_tool_names = {spec.name for spec in tool_specs}
 
         system_context = AGENT_WORKFLOW_PROMPT
         if self._include_identity_context:
-            system_context = build_agent_system_context(workspace=request.workspace, tools=tool_specs) + "\n" + AGENT_WORKFLOW_PROMPT
+            system_context = build_agent_system_context(workspace=workspace, tools=tool_specs) + "\n" + AGENT_WORKFLOW_PROMPT
 
         messages = [
             ModelMessage(
@@ -137,7 +142,7 @@ class AgentService:
             *history,
             ModelMessage(
                 role="user",
-                content=(f"Selected workspace context: {request.workspace}.\n" if request.workspace else "") + request.message,
+                content=(f"Selected workspace context: {workspace}.\n" if workspace else "") + request.message,
             ),
         ]
 

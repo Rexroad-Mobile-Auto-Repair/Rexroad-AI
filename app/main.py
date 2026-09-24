@@ -124,6 +124,11 @@ CHAT_HTML = CHAT_HTML.replace(".session{padding:.55rem", ".session{padding:.7rem
 CHAT_HTML = CHAT_HTML.replace("const $=id=>document.getElementById(id),messages=$('messages');let busy=false;", "const $=id=>document.getElementById(id),messages=$('messages');let busy=false,currentSessionId=null;")
 CHAT_HTML = CHAT_HTML.replace("messages.innerHTML='';events.filter", "currentSessionId=id;messages.innerHTML='';events.filter")
 CHAT_HTML = CHAT_HTML.replace("$('new').onclick=()=>{messages.innerHTML=", "$('new').onclick=()=>{currentSessionId=null;messages.innerHTML=")
+CHAT_HTML = CHAT_HTML.replace("$('workspace').innerHTML='<option value=\"\">None</option>'+ws.filter", "const activeWorkspace=$('workspace').value;$('workspace').innerHTML='<option value=\"\">None</option>'+ws.filter")
+CHAT_HTML = CHAT_HTML.replace(".join('');document.querySelectorAll('[data-session]')", ".join('');if(activeWorkspace)$('workspace').value=activeWorkspace;$('workspace').disabled=!!currentSessionId;document.querySelectorAll('[data-session]')")
+CHAT_HTML = CHAT_HTML.replace(".join('');$('sessions').innerHTML=", ".join('');if(activeWorkspace)$('workspace').value=activeWorkspace;$('workspace').disabled=!!currentSessionId;$('sessions').innerHTML=")
+CHAT_HTML = CHAT_HTML.replace("currentSessionId=id;messages.innerHTML='';events.filter", "currentSessionId=id;messages.innerHTML='';const bound=events.find(x=>x.event_type==='user_request');if(bound&&bound.payload.workspace){$('workspace').value=bound.payload.workspace;}$('workspace').disabled=true;events.filter")
+CHAT_HTML = CHAT_HTML.replace("$('new').onclick=()=>{currentSessionId=null;messages.innerHTML=", "$('new').onclick=()=>{currentSessionId=null;$('workspace').disabled=false;messages.innerHTML=")
 CHAT_HTML = CHAT_HTML.replace("body:JSON.stringify({message:text,workspace:$('workspace').value||null})", "body:JSON.stringify({message:text,session_id:currentSessionId,workspace:$('workspace').value||null})")
 CHAT_HTML = CHAT_HTML.replace("add('assistant',d.content||'');$('status')", "currentSessionId=d.session_id;add('assistant',d.content||'');$('status')")
 

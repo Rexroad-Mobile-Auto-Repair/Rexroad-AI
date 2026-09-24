@@ -18,6 +18,8 @@ def test_chat_page_loads_without_workspace_and_links_operator():
     assert "/sessions/" in response.text
     assert "currentSessionId" in response.text
     assert "session_id:currentSessionId" in response.text
+    assert "activeWorkspace" in response.text
+    assert "workspace').disabled=!!currentSessionId" in response.text
 
 
 def test_root_operator_and_chat_routes_remain_available():
