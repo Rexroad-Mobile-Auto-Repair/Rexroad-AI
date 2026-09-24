@@ -7,6 +7,42 @@ from app.providers.models import ModelRequest, ModelResponse, ProviderStreamEven
 from app.tools.models import ModelMessage, ToolCall, ToolSpec
 
 
+class _ToolCallAccumulator:
+    MAX_ARGUMENT_BYTES = 16_000
+
+    def __init__(self) -> None:
+        self._calls: dict[int, dict[str, str]] = {}
+        self._completed = False
+
+    def add(self, fragment: dict) -> None:
+        index = int(fragment.get("index", 0))
+        current = self._calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+        current["id"] = current["id"] or str(fragment.get("id") or "")
+        function = fragment.get("function") or {}
+        current["name"] += str(function.get("name") or "")
+        current["arguments"] += str(function.get("arguments") or "")
+        if len(current["arguments"].encode("utf-8")) > self.MAX_ARGUMENT_BYTES:
+            raise ValueError("tool-call arguments exceeded the size limit")
+
+    def complete(self) -> list[ToolCall]:
+        if self._completed:
+            return []
+        self._completed = True
+        calls = []
+        for index in sorted(self._calls):
+            item = self._calls[index]
+            if not item["id"] or not item["name"]:
+                raise ValueError("incomplete streamed tool call")
+            try:
+                arguments = json.loads(item["arguments"] or "{}")
+            except json.JSONDecodeError as exc:
+                raise ValueError("malformed streamed tool arguments") from exc
+            if not isinstance(arguments, dict):
+                raise TypeError("streamed tool arguments must be an object")
+            calls.append(ToolCall(id=item["id"], name=item["name"], arguments=arguments))
+        return calls
+
+
 class OpenAICompatibleProvider(ModelProvider):
     name = "openai_compatible"
 
@@ -146,6 +182,7 @@ class OpenAICompatibleProvider(ModelProvider):
         if request.tools:
             payload["tools"] = [self._tool_payload(tool) for tool in request.tools]
         text = ""
+        accumulator = _ToolCallAccumulator()
         async with httpx.AsyncClient(timeout=120.0) as client, client.stream("POST", f"{self._base_url}/chat/completions", json=payload, headers=self._headers()) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
@@ -160,6 +197,8 @@ class OpenAICompatibleProvider(ModelProvider):
                         yield ProviderStreamEvent(type="provider_error", message="malformed provider stream")
                         return
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    for fragment in delta.get("tool_calls", []) or []:
+                        accumulator.add(fragment)
                     part = delta.get("content") or ""
                     if part:
                         text += part
@@ -167,7 +206,14 @@ class OpenAICompatibleProvider(ModelProvider):
                             yield ProviderStreamEvent(type="provider_error", message="provider response exceeded the size limit")
                             return
                         yield ProviderStreamEvent(type="text_delta", text=part)
-        yield ProviderStreamEvent(type="completed", response=ModelResponse(provider=self.name, model=request.model, content=text))
+        try:
+            calls = accumulator.complete()
+        except ValueError as exc:
+            yield ProviderStreamEvent(type="provider_error", message=str(exc))
+            return
+        for call in calls:
+            yield ProviderStreamEvent(type="tool_call_complete", tool_call=call)
+        yield ProviderStreamEvent(type="completed", response=ModelResponse(provider=self.name, model=request.model, content=text, tool_calls=calls))
 
     async def health_check(self) -> bool:
         try:
