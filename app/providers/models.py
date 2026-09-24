@@ -28,7 +28,8 @@ class ModelResponse(BaseModel):
 
 
 class ProviderStreamEvent(BaseModel):
-    type: Literal["text_delta", "completed", "provider_error"]
+    type: Literal["text_delta", "tool_call_complete", "completed", "provider_error"]
     text: str = ""
+    tool_call: ToolCall | None = None
     response: ModelResponse | None = None
     message: str | None = None

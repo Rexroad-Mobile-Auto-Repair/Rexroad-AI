@@ -18,7 +18,7 @@ from app.context.models import ContextRequest
 from app.journal.store import ActionJournal
 from app.knowledge.serialization import serialize_search_results
 from app.providers.factory import get_default_model
-from app.providers.models import ModelRequest
+from app.providers.models import ModelRequest, ModelResponse
 from app.providers.registry import ProviderRegistry
 from app.tools.models import ModelMessage
 from app.tools.registry import ToolRegistry
@@ -167,9 +167,21 @@ class AgentService:
                         evidence_content_byte_budget=self._settings.model_evidence_content_byte_budget,
                     )
                 )
-                response = await provider.generate(
-                    ModelRequest(model=model, messages=context.messages, tools=tool_specs)
-                )
+                streamed_text = ""
+                streamed_calls = []
+                async for stream_event in provider.stream(ModelRequest(model=model, messages=context.messages, tools=tool_specs)):
+                    if stream_event.type == "provider_error":
+                        raise RuntimeError(stream_event.message or "provider stream failed")
+                    if stream_event.type == "text_delta":
+                        streamed_text += stream_event.text
+                        if not streamed_calls and event_callback:
+                            await event_callback({"type": "text_delta", "text": stream_event.text[:12000]})
+                    elif stream_event.type == "tool_call_complete" and stream_event.tool_call is not None:
+                        streamed_calls.append(stream_event.tool_call)
+                    elif stream_event.type == "completed" and stream_event.response is not None:
+                        streamed_text = stream_event.response.content or streamed_text
+                        streamed_calls = stream_event.response.tool_calls or streamed_calls
+                response = ModelResponse(provider=provider.name, model=model, content=streamed_text, tool_calls=streamed_calls)
             except ContextBudgetError:
                 if self._journal is not None:
                     self._journal.append_event(
@@ -375,7 +387,6 @@ class AgentService:
                 content=response.content,
             )
             if event_callback:
-                await event_callback({"type": "text_delta", "text": response.content[:12000]})
                 await event_callback({"type": "completed", "session_id": session_id, "response": response.content[:12000]})
             return result
 
