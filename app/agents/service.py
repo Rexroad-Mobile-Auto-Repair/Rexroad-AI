@@ -253,7 +253,8 @@ class AgentService:
                             payload={"tool": tool_call.name},
                         )
                     try:
-                        result = self._tools.execute(
+                        result = await asyncio.to_thread(
+                            self._tools.execute,
                             tool_call.name,
                             **tool_call.arguments,
                         )
