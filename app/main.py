@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
-from app.agents.service import AgentService, AgentSessionError
+from app.agents.service import AgentLoopLimitError, AgentService, AgentSessionError
 from app.coding_actions import (
     CodingJobActionRequest,
     CodingJobActionResult,
@@ -394,6 +394,8 @@ async def agent_query(
     except AgentSessionError as exc:
         status = 404 if str(exc) == "Session not found" else 409
         raise HTTPException(status_code=status, detail=str(exc)) from None
+    except AgentLoopLimitError:
+        raise HTTPException(status_code=422, detail="The request exceeded the bounded tool-use limit") from None
 
 
 @app.get("/tool-approvals/{request_id}", response_model=ToolApprovalRequest)

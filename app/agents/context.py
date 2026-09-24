@@ -1,6 +1,20 @@
 from app.tools.models import ToolSpec
 
 
+def read_only_intent(message: str) -> bool:
+    text = message.casefold()
+    return any(phrase in text for phrase in (
+        "do not modify", "don't modify", "read only", "inspect only", "without changing",
+    ))
+
+
+def requests_check_execution(message: str) -> bool:
+    text = message.casefold()
+    return any(phrase in text for phrase in (
+        "run the tests", "run relevant tests", "run the relevant tests", "run pytest", "run ruff", "run the configured checks", "execute the tests",
+    )) and not read_only_intent(message)
+
+
 def build_agent_system_context(*, workspace: str | None, tools: list[ToolSpec]) -> str:
     lines = [
         "You are Rexroad AI, a locally operated AI/agent application.",
@@ -30,5 +44,6 @@ def build_agent_system_context(*, workspace: str | None, tools: list[ToolSpec]) 
         "When asked what you can do, answer as Rexroad AI and describe these bounded application capabilities rather than generic model training.",
         "When asked about supervised coding, explain the Rexroad AI runtime workflow, not how the underlying model was trained.",
         "When asked what you remember, explain the supplied bounded current-session history and distinguish it from project memory.",
+        "Gather only the evidence needed, avoid redundant tool calls, and answer the user's task directly once enough evidence is available.",
     ])
     return "\n".join(lines)

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from uuid import uuid4
 
-from app.agents.context import build_agent_system_context
+from app.agents.context import (
+    build_agent_system_context,
+    read_only_intent,
+    requests_check_execution,
+)
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.config import Settings
 from app.context.builder import ContextBudgetError, ContextBuilder
@@ -22,7 +27,7 @@ VERIFICATION_PROMPT = (
     "Verification pass: review the draft answer against the tool evidence "
     "already collected. Check for unsupported claims, missing evidence, or "
     "contradictions. Use additional available read-only tools if needed. "
-    "Return the final answer only after verification is complete."
+    "Return the final answer only after verification is complete. Answer the user's request directly; do not lead with internal verification commentary."
 )
 
 
@@ -74,6 +79,17 @@ class AgentService:
             used += size
         return list(reversed(messages))
 
+    def _tool_specs_for_request(self, request: AgentQueryRequest):
+        if self._tools is None or not (request.workspace or self._allow_tools_without_workspace):
+            return []
+        check_allowed = requests_check_execution(request.message) and not read_only_intent(request.message)
+        specs = []
+        for spec in self._tools.specs():
+            definition = self._tools.get(spec.name)
+            if definition.permission == "read" or (definition.permission == "workspace_check" and check_allowed):
+                specs.append(spec)
+        return specs
+
     async def query(self, request: AgentQueryRequest) -> AgentQueryResponse:
         provider_name = request.provider or self._settings.default_provider
         provider = self._registry.get(provider_name)
@@ -106,11 +122,8 @@ class AgentService:
                 payload={"content": request.message, "workspace": request.workspace},
             )
 
-        tool_specs = (
-            self._tools.specs()
-            if self._tools is not None and (request.workspace or self._allow_tools_without_workspace)
-            else []
-        )
+        tool_specs = self._tool_specs_for_request(request)
+        allowed_tool_names = {spec.name for spec in tool_specs}
 
         system_context = AGENT_WORKFLOW_PROMPT
         if self._include_identity_context:
@@ -131,6 +144,7 @@ class AgentService:
         tool_rounds = 0
         used_tools = False
         verification_requested = False
+        previous_tool_progress: set[str] = set()
 
         while True:
             try:
@@ -203,6 +217,10 @@ class AgentService:
                 )
 
                 for tool_call in response.tool_calls:
+                    if tool_call.name not in allowed_tool_names:
+                        if self._journal is not None:
+                            self._journal.append_event(session_id=session_id, event_type="error", payload={"stage": "tool_policy"})
+                        raise RuntimeError("Requested tool is not available for this request")
                     tool = self._tools.get(tool_call.name)
                     if self._journal is not None:
                         self._journal.append_event(
@@ -247,6 +265,13 @@ class AgentService:
                             )
 
                         raise
+
+                    progress_key = hashlib.sha256((tool_call.name + json.dumps(tool_call.arguments, sort_keys=True, default=str) + json.dumps(result, sort_keys=True, default=str)).encode()).hexdigest()
+                    if tool_rounds > 2 and progress_key in previous_tool_progress:
+                        if self._journal is not None:
+                            self._journal.append_event(session_id=session_id, event_type="error", payload={"stage": "no_progress"})
+                        raise AgentLoopLimitError("Repeated tool call made no progress")
+                    previous_tool_progress.add(progress_key)
 
                     if isinstance(result, str):
                         content = result

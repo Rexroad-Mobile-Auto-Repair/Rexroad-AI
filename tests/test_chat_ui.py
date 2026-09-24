@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.agents.models import AgentQueryResponse
+from app.agents.service import AgentLoopLimitError
 
 
 def test_chat_page_loads_without_workspace_and_links_operator():
@@ -48,6 +49,18 @@ def test_workspace_free_request_is_not_given_workspace_context(monkeypatch):
     response = TestClient(main.app).post("/agent/query", json={"message": "hi"})
     assert response.status_code == 200
     assert response.json()["content"] == "workspace-free"
+
+
+def test_loop_limit_returns_safe_api_error(monkeypatch):
+    class FailingAgent:
+        async def query(self, request):
+            raise AgentLoopLimitError("internal detail")
+
+    monkeypatch.setattr(main, "agent_service", FailingAgent())
+    response = TestClient(main.app).post("/agent/query", json={"message": "inspect"})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "The request exceeded the bounded tool-use limit"
+    assert "internal detail" not in response.text
 
 
 def test_unknown_chat_workspace_is_rejected(monkeypatch):
