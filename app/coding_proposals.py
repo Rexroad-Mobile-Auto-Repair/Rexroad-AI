@@ -15,6 +15,7 @@ from app.coding_workflows import CodingWorkflowService
 from app.plans.models import PlanCreate, PlanStepCreate
 from app.policy.workspaces import WorkspaceRegistry
 from app.storage import SQLiteDatabase
+from app.structured_output import StructuredOutputError, StructuredOutputService
 from app.tools.git import ReadOnlyGit
 
 
@@ -225,8 +226,10 @@ class CodingProposalService:
         result = record[1]
         try:
             payload = json.loads(result.summary)
-            candidate = RevisionCandidate.model_validate(payload.get("proposal", payload))
-        except (ValueError, TypeError, json.JSONDecodeError):
+            candidate = StructuredOutputService.validate_json(
+                json.dumps(payload.get("proposal", payload), sort_keys=True), RevisionCandidate
+            )
+        except (StructuredOutputError, ValueError, TypeError, json.JSONDecodeError):
             raise ValueError("invalid revision candidate") from None
         return {"workflow_id": workflow_id, "parent_proposal_id": parent_id, "revision_number": parent.revision_number + 1, "task_id": task_id, "review_status": review.status, "note": note, "materialized_proposal_id": materialized, "summary": result.summary[:2000], "candidate": candidate.model_dump()}
 

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,7 @@ class ModelRequest(BaseModel):
     messages: list[ModelMessage]
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     tools: list[ToolSpec] = Field(default_factory=list)
+    structured_output: Any | None = None
 
 
 class ModelResponse(BaseModel):
