@@ -427,20 +427,13 @@ async def agent_query_stream(request: AgentQueryRequest) -> StreamingResponse:
     async def events():
         session_id = request.session_id or str(uuid4())
         bounded_request = request.model_copy(update={"session_id": session_id})
-        yield _stream_event("session", {"session_id": session_id})
         yield _stream_event("status", {"message": "Working on your request"})
         try:
-            response = await agent_service.query(bounded_request)
-            for event in action_journal.list_events_for_session(response.session_id):
-                if event.event_type == "tool_call":
-                    tool_name = str(event.payload.get("tool", ""))
-                    yield _stream_event("status", {"message": _STREAM_TOOL_LABELS.get(tool_name, "Using a project tool")})
-                    yield _stream_event("tool_started", {"tool": tool_name})
-                elif event.event_type == "tool_result":
-                    tool_name = str(event.payload.get("tool", ""))
-                    yield _stream_event("tool_completed", {"tool": tool_name, "status": "completed"})
-            yield _stream_event("text_delta", {"text": response.content[:12000]})
-            yield _stream_event("completed", {"session_id": response.session_id, "response": response.content[:12000]})
+            async for event in agent_service.query_stream(bounded_request):
+                event_type = event.pop("type")
+                if event_type == "tool_started":
+                    event = {"tool": event["tool"], "label": _STREAM_TOOL_LABELS.get(event["tool"], "Using a project tool")}
+                yield _stream_event(event_type, event)
         except AgentSessionError as exc:
             yield _stream_event("error", {"message": str(exc)[:200]})
         except AgentLoopLimitError:

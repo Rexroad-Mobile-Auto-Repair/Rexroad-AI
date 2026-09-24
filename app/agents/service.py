@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
 from app.agents.context import (
@@ -90,7 +92,7 @@ class AgentService:
                 specs.append(spec)
         return specs
 
-    async def query(self, request: AgentQueryRequest) -> AgentQueryResponse:
+    async def query(self, request: AgentQueryRequest, event_callback: Callable[[dict], Awaitable[None]] | None = None) -> AgentQueryResponse:
         provider_name = request.provider or self._settings.default_provider
         provider = self._registry.get(provider_name)
 
@@ -125,6 +127,8 @@ class AgentService:
                 event_type="user_request",
                 payload={"content": request.message, "workspace": workspace},
             )
+        if event_callback:
+            await event_callback({"type": "session", "session_id": session_id})
 
         effective_request = request.model_copy(update={"workspace": workspace})
         tool_specs = self._tool_specs_for_request(effective_request)
@@ -227,6 +231,8 @@ class AgentService:
                             self._journal.append_event(session_id=session_id, event_type="error", payload={"stage": "tool_policy"})
                         raise RuntimeError("Requested tool is not available for this request")
                     tool = self._tools.get(tool_call.name)
+                    if event_callback:
+                        await event_callback({"type": "tool_started", "tool": tool_call.name})
                     if self._journal is not None:
                         self._journal.append_event(
                             session_id=session_id,
@@ -234,6 +240,8 @@ class AgentService:
                             tool_call_id=tool_call.id,
                             payload={"tool": tool_call.name},
                         )
+                    if event_callback:
+                        await event_callback({"type": "tool_completed", "tool": tool_call.name, "status": "completed"})
 
                     try:
                         result = self._tools.execute(
@@ -360,9 +368,34 @@ class AgentService:
                         payload={"provider": response.provider, "model": response.model, "content": response.content},
                     )
 
-            return AgentQueryResponse(
+            result = AgentQueryResponse(
                 provider=response.provider,
                 model=response.model,
                 session_id=session_id,
                 content=response.content,
             )
+            if event_callback:
+                await event_callback({"type": "text_delta", "text": response.content[:12000]})
+                await event_callback({"type": "completed", "session_id": session_id, "response": response.content[:12000]})
+            return result
+
+    async def query_stream(self, request: AgentQueryRequest) -> AsyncIterator[dict]:
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+        async def emit(event: dict) -> None:
+            await queue.put(event)
+
+        task = asyncio.create_task(self.query(request, event_callback=emit))
+        try:
+            while True:
+                if task.done() and queue.empty():
+                    error = task.exception()
+                    if error:
+                        raise error
+                    break
+                event = await queue.get()
+                if event is not None:
+                    yield event
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
