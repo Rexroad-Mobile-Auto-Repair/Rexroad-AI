@@ -240,9 +240,6 @@ class AgentService:
                             tool_call_id=tool_call.id,
                             payload={"tool": tool_call.name},
                         )
-                    if event_callback:
-                        await event_callback({"type": "tool_completed", "tool": tool_call.name, "status": "completed"})
-
                     try:
                         result = self._tools.execute(
                             tool_call.name,
@@ -278,6 +275,9 @@ class AgentService:
                             )
 
                         raise
+
+                    if event_callback:
+                        await event_callback({"type": "tool_completed", "tool": tool_call.name, "status": "completed"})
 
                     progress_key = hashlib.sha256((tool_call.name + json.dumps(tool_call.arguments, sort_keys=True, default=str) + json.dumps(result, sort_keys=True, default=str)).encode()).hexdigest()
                     if tool_rounds > 2 and progress_key in previous_tool_progress:
