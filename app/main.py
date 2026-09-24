@@ -1,7 +1,8 @@
 import json
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
@@ -35,6 +36,15 @@ from app.memory.models import MemoryCreate, MemoryRecord, MemoryUpdate
 from app.memory.proposals import MemoryProposal, MemoryProposalCreate, ProposalService
 from app.memory.service import MemoryService
 from app.memory.store import MemoryStore
+from app.openai_compat import (
+    REXROAD_MODEL,
+    OpenAIChatRequest,
+    completion_response,
+    safe_agent_error,
+    stream_completion,
+    to_agent_request,
+    validate_request,
+)
 from app.plans.bridge import TrustedExecutionBridge
 from app.plans.execution import PlanExecutionCoordinator, PlanExecutionError
 from app.plans.models import PlanCreate, PlanStep, ProjectPlan, StepStatus
@@ -249,6 +259,50 @@ async def providers() -> list[ProviderStatus]:
         )
 
     return results
+
+
+@app.get("/v1/models")
+async def openai_models() -> dict[str, object]:
+    return {
+        "object": "list",
+        "data": [{"id": REXROAD_MODEL, "object": "model", "owned_by": "rexroad"}],
+    }
+
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(
+    request: OpenAIChatRequest,
+    x_rexroad_workspace: str | None = Header(default=None),
+    x_rexroad_session_id: str | None = Header(default=None),
+):
+    validate_request(request)
+    if x_rexroad_workspace is not None:
+        try:
+            workspace_registry.get_root(x_rexroad_workspace)
+        except WorkspaceAccessError:
+            raise HTTPException(status_code=404, detail={"error": {"message": "Workspace not found", "type": "invalid_request_error", "param": None, "code": "invalid_workspace"}}) from None
+    agent_request = to_agent_request(request, session_id=x_rexroad_session_id, workspace=x_rexroad_workspace)
+    if request.stream:
+        completion_id = f"chatcmpl-{uuid4().hex}"
+
+        async def events():
+            try:
+                async for item in stream_completion(agent_service, agent_request, completion_id):
+                    yield f"data: {json.dumps(item, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as exc:  # noqa: BLE001 - compatibility boundary returns safe failure
+                error = safe_agent_error(exc).detail
+                yield f"data: {json.dumps(error, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+    try:
+        response = await agent_service.query(agent_request)
+    except Exception as exc:  # noqa: BLE001 - compatibility boundary returns safe failure
+        raise safe_agent_error(exc) from None
+    result = completion_response(response)
+    headers = {"X-Rexroad-Session-ID": response.session_id}
+    return JSONResponse(result, headers=headers)
 
 
 @app.get("/sessions")
