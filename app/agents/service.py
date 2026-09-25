@@ -111,9 +111,12 @@ class AgentService:
         if self._tools is None or not (request.workspace or self._allow_tools_without_workspace):
             return []
         check_allowed = requests_check_execution(request.message) and not read_only_intent(request.message)
+        mcp_requested = "mcp" in request.message.lower()
         specs = []
         for spec in self._tools.specs():
             definition = self._tools.get(spec.name)
+            if definition.name.startswith("mcp.") and not mcp_requested:
+                continue
             command_allowed = definition.name == "workspace.run_command" and requests_command_execution(request.message)
             if requests_command_execution(request.message) and definition.name in {"git.status", "git.branch", "git.log", "git.diff", "git.show"}:
                 continue

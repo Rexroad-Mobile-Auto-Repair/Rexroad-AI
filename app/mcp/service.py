@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import queue
+import subprocess
+import threading
 import time
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -12,8 +16,112 @@ MAX_PAYLOAD = 20_000
 class MCPServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
-    transport: str = Field(default="fake", pattern=r"^fake$")
+    transport: str = Field(default="fake", pattern=r"^(fake|stdio)$")
     read_only: bool = True
+    command: str | None = None
+    args: list[str] = Field(default_factory=list, max_length=32)
+    cwd: str | None = None
+    request_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+
+
+class StdioMCPClient:
+    """Bounded newline-delimited JSON-RPC MCP client for local stdio servers."""
+
+    def __init__(self, config: MCPServerConfig) -> None:
+        if not config.command:
+            raise ValueError("stdio MCP server requires a command")
+        self._config = config
+        self._process: subprocess.Popen[str] | None = None
+        self._responses: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._next_id = 0
+        self._reader: threading.Thread | None = None
+
+    def connect(self) -> None:
+        if self._process is not None:
+            return
+        self._process = subprocess.Popen(
+            [self._config.command, *self._config.args],
+            cwd=self._config.cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+            shell=False,
+            env={"PYTHONIOENCODING": "utf-8"},
+        )
+        self._reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self._reader.start()
+        self._request("initialize", {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "rexroad-ai", "version": "0.1.0"},
+        })
+        self._notify("notifications/initialized", {})
+
+    def close(self) -> None:
+        process, self._process = self._process, None
+        if process is None:
+            return
+        if process.stdin:
+            process.stdin.close()
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        result = self._request("tools/list", {})
+        return result.get("tools", []) if isinstance(result.get("tools"), list) else []
+
+    def list_resources(self) -> list[dict[str, Any]]:
+        result = self._request("resources/list", {})
+        return result.get("resources", []) if isinstance(result.get("resources"), list) else []
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return self._request("tools/call", {"name": name, "arguments": arguments})
+
+    def read_resource(self, uri: str) -> dict[str, Any]:
+        result = self._request("resources/read", {"uri": uri})
+        return result if isinstance(result, dict) else {"content": result}
+
+    def _read_stdout(self) -> None:
+        assert self._process and self._process.stdout
+        for line in self._process.stdout:
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, dict) and "id" in message:
+                self._responses.put(message)
+
+    def _notify(self, method: str, params: dict[str, Any]) -> None:
+        self._write({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._next_id += 1
+        request_id = self._next_id
+        self._write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + self._config.request_timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("MCP request timed out")
+            response = self._responses.get(timeout=remaining)
+            if response.get("id") != request_id:
+                continue
+            if isinstance(response.get("error"), dict):
+                raise TypeError("MCP request failed")
+            result = response.get("result", {})
+            return result if isinstance(result, dict) else {"value": result}
+
+    def _write(self, message: dict[str, Any]) -> None:
+        if not self._process or not self._process.stdin:
+            raise RuntimeError("MCP server is not connected")
+        self._process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        self._process.stdin.flush()
 
 
 class MCPToolDefinition(BaseModel):
@@ -105,9 +213,21 @@ class MCPAdapter:
                 resources.append(key)
             self._status[name] = MCPServerStatus(name=name, configured=True, connected=True, tool_count=len(tools), resource_count=len(resources), latency_ms=round((time.perf_counter() - started) * 1000))
             return self._status[name]
+
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             self._status[name] = MCPServerStatus(name=name, configured=True, last_error=str(exc)[:300])
             return self._status[name]
+
+    def connect_configured(self, name: str) -> MCPServerStatus:
+        config = self._configs.get(name)
+        if config is None:
+            raise ValueError("MCP server is not configured")
+        if config.transport == "stdio":
+            return self.connect(name, StdioMCPClient(config))
+        return self._status[name]
+
+    def connect_all_configured(self) -> list[MCPServerStatus]:
+        return [self.connect_configured(name) for name in self._configs]
 
     def disconnect(self, name: str) -> None:
         client = self._clients.pop(name, None)
@@ -155,5 +275,7 @@ class MCPAdapter:
     def read(self, qualified_resource: str) -> MCPResourceReadResult:
         resource = self._resources[qualified_resource]
         result = self._clients[resource.server].read_resource(resource.uri)
-        content = str(result.get("text", result.get("content", "")))[:MAX_PAYLOAD]
-        return MCPResourceReadResult(server=resource.server, uri=resource.uri, mime_type=result.get("mimeType", resource.mime_type), content=content, retrieved_at=datetime.now(UTC))
+        contents = result.get("contents") if isinstance(result, dict) else None
+        first = contents[0] if isinstance(contents, list) and contents and isinstance(contents[0], dict) else result
+        content = str(first.get("text", first.get("content", "")))[:MAX_PAYLOAD]
+        return MCPResourceReadResult(server=resource.server, uri=resource.uri, mime_type=first.get("mimeType", resource.mime_type), content=content, retrieved_at=datetime.now(UTC))

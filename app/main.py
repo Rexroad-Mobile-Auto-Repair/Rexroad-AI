@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException
@@ -32,6 +33,8 @@ from app.knowledge.embeddings import OpenAICompatibleEmbeddingProvider
 from app.knowledge.models import KnowledgeIndexResult, KnowledgeSearchResult
 from app.knowledge.service import KnowledgeService
 from app.knowledge.store import KnowledgeStore
+from app.mcp.config import load_mcp_server_configs
+from app.mcp.service import MCPAdapter
 from app.memory.models import MemoryCreate, MemoryRecord, MemoryUpdate
 from app.memory.proposals import MemoryProposal, MemoryProposalCreate, ProposalService
 from app.memory.service import MemoryService
@@ -179,6 +182,7 @@ tool_registry = build_tool_registry(
     filesystem, git, knowledge_service, memory_service, proposal_service, plan_service,
     settings.action_journal_path, cross_workspace=cross_workspace_service,
 )
+mcp_adapter = MCPAdapter(load_mcp_server_configs(Path(settings.action_journal_path).parent / "mcp_servers.json"))
 execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan_service, tool_registry)
 execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
 plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal, lambda workspace, scope, reason: project_history_service.capture_after_success(workspace, scope, reason))
@@ -207,6 +211,24 @@ agent_service = AgentService(
     skill_workspace_resolver=workspace_registry.get_root,
 )
 diagnostics = build_local_diagnostics(settings)
+
+
+@app.on_event("startup")
+async def start_mcp_servers() -> None:
+    """Connect configured MCP servers without making startup dependent on them."""
+    for name in [status.name for status in mcp_adapter.statuses()]:
+        try:
+            mcp_adapter.connect_configured(name)
+        except Exception:  # noqa: BLE001, S112 - optional integration boundary
+            continue
+    mcp_adapter.register_tools(tool_registry)
+
+
+@app.on_event("shutdown")
+async def stop_mcp_servers() -> None:
+    for status in mcp_adapter.statuses():
+        if status.connected:
+            mcp_adapter.disconnect(status.name)
 
 
 @app.get("/health")
@@ -275,6 +297,11 @@ async def providers() -> list[ProviderStatus]:
         )
 
     return results
+
+
+@app.get("/mcp/status")
+async def mcp_status() -> list[dict[str, object]]:
+    return [status.model_dump() for status in mcp_adapter.statuses()]
 
 
 @app.get("/v1/models")
