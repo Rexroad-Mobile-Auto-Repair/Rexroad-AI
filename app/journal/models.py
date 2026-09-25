@@ -10,6 +10,7 @@ ActionStatus = Literal[
 EventType = Literal[
     "user_request", "model_response", "tool_call", "tool_result",
     "verification_request", "verification_response", "final_response", "error",
+    "compaction_boundary", "compaction_summary",
 ]
 
 

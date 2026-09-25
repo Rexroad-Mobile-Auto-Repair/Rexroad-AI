@@ -14,6 +14,7 @@ from app.agents.context import (
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.config import Settings
 from app.context.builder import ContextBudgetError, ContextBuilder
+from app.context.compaction import ContextCompactionService
 from app.context.models import ContextRequest
 from app.journal.store import ActionJournal
 from app.knowledge.serialization import serialize_search_results
@@ -52,6 +53,7 @@ class AgentService:
         context_builder: ContextBuilder | None = None,
         allow_tools_without_workspace: bool = True,
         include_identity_context: bool = False,
+        compaction_service: ContextCompactionService | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -61,11 +63,28 @@ class AgentService:
         self._context_builder = context_builder or ContextBuilder()
         self._allow_tools_without_workspace = allow_tools_without_workspace
         self._include_identity_context = include_identity_context
+        self._compaction = compaction_service or ContextCompactionService(journal)
 
     @staticmethod
     def _history_messages(journal: ActionJournal, session_id: str, budget: int) -> list[ModelMessage]:
         events = journal.list_events_for_session(session_id)
         messages: list[ModelMessage] = []
+        latest_summary = next((event for event in reversed(events) if event.event_type == "compaction_summary"), None)
+        if latest_summary is not None:
+            summary = latest_summary.payload.get("summary")
+            if isinstance(summary, str) and summary:
+                messages.append(ModelMessage(role="assistant", content="[Rexroad compacted conversation summary]\n" + summary))
+            preserved = latest_summary.payload.get("preserved_messages")
+            if isinstance(preserved, list):
+                for item in preserved:
+                    if isinstance(item, dict):
+                        try:
+                            messages.append(ModelMessage.model_validate(item))
+                        except (TypeError, ValueError):
+                            continue
+            boundary = latest_summary.payload.get("source_end")
+            if isinstance(boundary, int):
+                events = [event for event in events if event.sequence > boundary]
         used = 0
         for event in reversed(events):
             if event.event_type not in {"user_request", "final_response"}:
@@ -149,6 +168,17 @@ class AgentService:
                 content=(f"Selected workspace context: {workspace}.\n" if workspace else "") + request.message,
             ),
         ]
+        compaction = await self._compaction.compact(
+            session_id=session_id,
+            messages=messages,
+            provider=provider,
+            model=model,
+            token_budget=self._settings.model_context_token_budget,
+            trigger_ratio=self._settings.model_compaction_trigger_ratio,
+            recent_messages=self._settings.model_compaction_recent_messages,
+            summary_token_budget=self._settings.model_compaction_summary_token_budget,
+        )
+        messages = compaction.messages
 
         tool_rounds = 0
         used_tools = False

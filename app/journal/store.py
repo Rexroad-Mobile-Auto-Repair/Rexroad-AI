@@ -260,6 +260,12 @@ class ActionJournal:
         for key, value in payload.items():
             if isinstance(value, str):
                 safe[key] = value[: cls.EVENT_CONTENT_LIMIT]
+            elif key == "preserved_messages" and isinstance(value, list):
+                safe[key] = [
+                    {k: str(v)[: cls.EVENT_CONTENT_LIMIT] for k, v in item.items()}
+                    for item in value[:20]
+                    if isinstance(item, dict)
+                ]
             elif isinstance(value, (int, float, bool)) or value is None:
                 safe[key] = value
             else:

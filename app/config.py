@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     request_timeout_seconds: float = Field(default=120.0, gt=0)
 
     model_context_byte_budget: int = Field(default=65536, gt=0)
+    model_context_token_budget: int = Field(default=12000, gt=0)
+    model_compaction_trigger_ratio: float = Field(default=0.85, gt=0.1, le=1.0)
+    model_compaction_recent_messages: int = Field(default=6, ge=2, le=50)
+    model_compaction_summary_token_budget: int = Field(default=1200, gt=100, le=8000)
     model_tool_result_byte_budget: int = Field(default=16384, gt=0)
 
     model_max_evidence_items: int = Field(default=8, gt=0)
