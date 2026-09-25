@@ -39,7 +39,10 @@ class WorkspaceNavigator:
         top = sorted({path.relative_to(root).parts[0] for path in files if path.relative_to(root).parts})[:MAX_ITEMS]
         key_files = [name for name in ("README.md", "pyproject.toml", "requirements.txt", "package.json", "Makefile") if (root / name).is_file()]
         indexed = self._knowledge.list_workspace(workspace) if self._knowledge is not None else []
-        return {"workspace": workspace, "operation": "map", "top_level": top, "key_files": key_files, "file_count": len(files), "source_file_count": sum(path.suffix.lower() in SOURCE_SUFFIXES for path in files), "test_file_count": sum(self._is_test(path) for path in files), "indexed_hint_count": len(indexed), "git": self._git(workspace, root)["git"]}
+        visible = [{"file": path.relative_to(root).as_posix(), "kind": "test" if self._is_test(path) else "source" if path.suffix.lower() in SOURCE_SUFFIXES else "support", "fresh": self._fresh(path)} for path in files[:MAX_ITEMS]]
+        symbols = self._symbols(workspace, root, "")["matches"][:MAX_ITEMS]
+        tests = [item["file"] for item in visible if item["kind"] == "test"]
+        return {"workspace": workspace, "operation": "map", "top_level": top, "key_files": key_files, "files": visible, "tests": tests, "symbols": symbols, "file_count": len(files), "source_file_count": sum(path.suffix.lower() in SOURCE_SUFFIXES for path in files), "test_file_count": sum(self._is_test(path) for path in files), "indexed_hint_count": len(indexed), "git": self._git(workspace, root)["git"]}
 
     def _symbols(self, workspace: str, root: Path, query: str) -> dict[str, Any]:
         tokens = [token for token in query.strip().lower().replace("_", " ").split() if token]; matches = []

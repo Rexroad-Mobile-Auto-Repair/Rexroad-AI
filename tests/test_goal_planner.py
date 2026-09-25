@@ -27,6 +27,7 @@ class PlannerProvider(ModelProvider):
         self.content = content
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
+        self.request = request
         return ModelResponse(provider=self.name, model=request.model, content=self.content)
 
     async def health_check(self) -> bool:
@@ -41,6 +42,17 @@ def service(tmp_path: Path, content: str) -> GoalDecompositionService:
     autonomy = AutonomousContinuationService(plans, PlanExecutionCoordinator(plans, tools))
     providers = ProviderRegistry(); providers.register(PlannerProvider(content))
     return GoalDecompositionService(providers, WorkspaceNavigator(workspaces), autonomy)
+
+
+def service_with_provider(tmp_path: Path, content: str) -> tuple[GoalDecompositionService, PlannerProvider]:
+    root = tmp_path / "repo"; root.mkdir(); (root / "example.py").write_text("def greeting(name):\n    return f'Hello, {name}'\n", encoding="utf-8")
+    (root / "tests").mkdir(); (root / "tests" / "test_example.py").write_text("def test_greeting():\n    assert greeting('Aaron') == 'Hello, Aaron'\n", encoding="utf-8")
+    workspaces = WorkspaceRegistry({"repo": root})
+    plans = PlanService(tmp_path / "state.sqlite3")
+    provider = PlannerProvider(content)
+    providers = ProviderRegistry(); providers.register(provider)
+    autonomy = AutonomousContinuationService(plans, PlanExecutionCoordinator(plans, ToolRegistry()))
+    return GoalDecompositionService(providers, WorkspaceNavigator(workspaces), autonomy), provider
 
 
 def task(key: str, deps: list[str] | None = None, worker: str = "direct") -> dict:
@@ -69,3 +81,26 @@ async def test_planner_rejects_missing_workspace_before_provider(tmp_path: Path)
     planner = service(tmp_path, "{}")
     with pytest.raises(WorkspaceAccessError):
         await planner.decompose(GoalRequest(goal="inspect", scope="s", workspace="missing"), provider_name="openai_compatible", model="test")
+
+
+@pytest.mark.asyncio
+async def test_planner_prompt_contains_live_files_and_persists_evidence(tmp_path: Path) -> None:
+    content = json.dumps({"tasks": [task("inspect"), task("code", ["inspect"], "supervised_coding")]})
+    planner, provider = service_with_provider(tmp_path, content)
+    _, plan = await planner.decompose(GoalRequest(goal="add a test", scope="s", workspace="repo"), provider_name="openai_compatible", model="test")
+    prompt = provider.request.messages[0].content
+    assert "example.py" in prompt and "tests/test_example.py" in prompt
+    assert plan.metadata["preplan_evidence"]["operation"] == "map"
+    assert "example.py" in plan.metadata["preplan_evidence"]["files"]
+
+
+def test_normalize_coalesces_duplicate_coding_and_internal_verifier_tasks(tmp_path: Path) -> None:
+    planner = service(tmp_path, "{}")
+    output = PlannerOutput(tasks=[
+        DecomposedTask(**task("inspect")),
+        DecomposedTask(**{**task("code", ["inspect"], "supervised_coding"), "objective": "Add the coding change"}),
+        DecomposedTask(**{**task("code_again", ["code"], "supervised_coding"), "title": "code", "objective": "Add the coding change through supervised coding workflow"}),
+        DecomposedTask(**{**task("verify", ["code"], "verifier"), "title": "Verify coding result", "objective": "Verify the coding change result and report"}),
+    ])
+    normalized = planner._normalize(output)
+    assert [item.key for item in normalized.tasks] == ["inspect", "code"]
