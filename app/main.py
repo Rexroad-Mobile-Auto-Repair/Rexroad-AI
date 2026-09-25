@@ -1064,7 +1064,17 @@ async def get_coding_guidance(workflow_id: str, scope: str) -> CodingJobGuidance
 @app.post("/supervisor-coding-workflows/{workflow_id}/action", response_model=CodingJobActionResult)
 async def dispatch_coding_job_action(workflow_id: str, request: CodingJobActionRequest) -> CodingJobActionResult:
     try:
-        return await coding_action_service.dispatch(workflow_id, request)
+        result = await coding_action_service.dispatch(workflow_id, request)
+        workflow = coding_workflow_service.get(workflow_id, request.scope)
+        if workflow is not None and workflow.parent_plan_id:
+            autonomy_service.continue_with_bridge(
+                plan_id=workflow.parent_plan_id,
+                scope=request.scope,
+                bridge=planned_execution_bridge,
+                authorizations={},
+                max_steps=10,
+            )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="Coding job action unavailable") from exc
 
