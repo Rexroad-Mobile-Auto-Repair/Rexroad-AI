@@ -43,6 +43,7 @@ class GoalDecompositionService:
     """Structured planner that validates a graph before handing it to autonomy."""
 
     ALLOWED_WORKERS: ClassVar[frozenset[str]] = frozenset({"direct", "researcher", "code_analyst", "verifier", "supervised_coding", "mcp", "skill"})
+    ALLOWED_TOOL_CATEGORIES: ClassVar[frozenset[str]] = frozenset({"read", "repo_map", "navigation", "git_status", "filesystem_read", "write", "execute", "mcp", "skill", "supervised_coding", "research"})
 
     def __init__(self, providers: ProviderRegistry, navigator: WorkspaceNavigator, autonomy: AutonomousContinuationService, policy: SupervisorPolicy | None = None) -> None:
         self._providers = providers
@@ -116,7 +117,14 @@ class GoalDecompositionService:
         normalized = []
         for task in kept:
             deps = list(dict.fromkeys(aliases.get(dep, dep) for dep in task.dependencies if aliases.get(dep, dep) != task.key))
-            normalized.append(task.model_copy(update={"dependencies": deps}))
+            category = task.tool_category
+            if category in {"analysis", "code_analysis", "inspection"} and task.worker in {"direct", "code_analyst", "researcher", "verifier"}:
+                category = "read"
+            if category not in self.ALLOWED_TOOL_CATEGORIES and task.worker in {"direct", "code_analyst", "researcher", "verifier"} and not task.mutation_required:
+                category = "read"
+            if category not in self.ALLOWED_TOOL_CATEGORIES:
+                raise ValueError("unknown tool category")
+            normalized.append(task.model_copy(update={"dependencies": deps, "tool_category": category}))
         return PlannerOutput(tasks=normalized)
 
     @staticmethod

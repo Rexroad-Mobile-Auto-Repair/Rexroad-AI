@@ -104,3 +104,11 @@ def test_normalize_coalesces_duplicate_coding_and_internal_verifier_tasks(tmp_pa
     ])
     normalized = planner._normalize(output)
     assert [item.key for item in normalized.tasks] == ["inspect", "code"]
+
+
+def test_normalize_rejects_or_maps_provider_tool_categories(tmp_path: Path) -> None:
+    planner = service(tmp_path, "{}")
+    mapped = planner._normalize(PlannerOutput(tasks=[DecomposedTask(**{**task("inspect", worker="code_analyst"), "tool_category": "analysis"})]))
+    assert mapped.tasks[0].tool_category == "read"
+    with pytest.raises(ValueError, match="tool category"):
+        planner._normalize(PlannerOutput(tasks=[DecomposedTask(**{**task("inspect", worker="supervised_coding"), "tool_category": "invented", "mutation_required": True})]))
