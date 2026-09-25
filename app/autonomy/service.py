@@ -126,6 +126,18 @@ class AutonomousContinuationService:
         final = self._plans.get(plan_id, scope)
         return {"plan_id": plan_id, "attempted": attempted, "completed": completed, "waiting": waiting, "plan_status": final.status if final else "missing", "state": self.inspect(plan_id, scope)}
 
+    def continue_with_team(self, *, plan_id: str, scope: str, bridge: Any, teams: Any, authorizations: dict[str, Any], max_steps: int = 1) -> dict[str, Any]:
+        """Create or reuse one durable team, then hand off to normal continuation."""
+        team = teams.get_for_plan(plan_id, scope)
+        if team is None or team["status"] == "active":
+            if team is None:
+                team = teams.create(plan_id, scope, bridge)
+            if team is not None and team["status"] == "active":
+                result = teams.run(team["team_id"], scope, bridge, authorizations, max_steps=max_steps)
+                if result["execution"]["attempted"]:
+                    return {"team": result["team"], "execution": result["execution"]}
+        return {"team": team, "execution": self.continue_with_bridge(plan_id=plan_id, scope=scope, bridge=bridge, authorizations=authorizations, max_steps=max_steps)}
+
     def continue_parallel(self, *, plan_id: str, scope: str, bridge: Any, authorizations: dict[str, Any], max_steps: int = 10, max_concurrency: int = 2, cancel_check: Any = None) -> dict[str, Any]:
         """Run a bounded batch of independent authorized read-only tasks."""
         if max_steps < 1 or max_steps > 50 or max_concurrency < 1 or max_concurrency > 4:

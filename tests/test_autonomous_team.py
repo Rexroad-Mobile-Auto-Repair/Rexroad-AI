@@ -31,10 +31,24 @@ def test_team_requires_two_independent_ready_tasks_and_reconstructs(tmp_path: Pa
     auth = tools.authorize("workspace.repo_map", "s")
     result = teams.run(team["team_id"], "s", bridge, {"workspace.repo_map": auth})
     assert len(result["execution"]["completed"]) == 2
-    assert result["team"]["status"] == "active"
+    assert result["team"]["status"] == "completed"
 
 
 def test_team_not_created_for_one_ready_task(tmp_path: Path) -> None:
     _, _, continuation, bridge, teams = build(tmp_path)
     plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="inspect", steps=[PlanStepCreate(title="one", metadata={"worker": "direct", "tool_category": "repo_map"})]))
     assert teams.create(plan.id, "s", bridge) is None
+
+
+def test_continuation_creates_and_reuses_team(tmp_path: Path) -> None:
+    _, tools, continuation, bridge, teams = build(tmp_path)
+    plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="inspect", steps=[
+        PlanStepCreate(title="one", metadata={"worker": "direct", "tool_category": "repo_map"}),
+        PlanStepCreate(title="two", metadata={"worker": "direct", "tool_category": "repo_map"}),
+    ]))
+    auth = tools.authorize("workspace.repo_map", "s")
+    first = continuation.continue_with_team(plan_id=plan.id, scope="s", bridge=bridge, teams=teams, authorizations={"workspace.repo_map": auth})
+    team_id = first["team"]["team_id"]
+    second = continuation.continue_with_team(plan_id=plan.id, scope="s", bridge=bridge, teams=teams, authorizations={"workspace.repo_map": auth})
+    assert second["team"]["team_id"] == team_id
+    assert second["execution"]["plan_status"] == "completed"

@@ -12,6 +12,7 @@ from app.autonomy.bridge import PlannedTaskExecutionBridge
 from app.autonomy.dispatch import PlannedWorkerDispatcher
 from app.autonomy.planner import GoalDecompositionService, GoalRequest
 from app.autonomy.service import AutonomousContinuationService
+from app.autonomy.team import AutonomousTeamCoordinator
 from app.coding_actions import (
     CodingJobActionRequest,
     CodingJobActionResult,
@@ -214,6 +215,7 @@ supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_j
 research_action_service = ResearchWorkflowActionService(supervisor_workflow_service)
 planned_worker_dispatcher = PlannedWorkerDispatcher(coding=coding_workflow_service, research=supervisor_workflow_service)
 planned_execution_bridge = PlannedTaskExecutionBridge(plan_service, autonomy_service, planned_worker_dispatcher)
+team_coordinator = AutonomousTeamCoordinator(settings.action_journal_path, plan_service, autonomy_service)
 supervisor_policy = SupervisorPolicy()
 supervisor_dashboard_service = SupervisorDashboardService(workspace_registry, project_state_service, coding_workflow_service, coding_job_service, coding_guidance_service, supervisor_workflow_service, plan_service, execution_trace_service, tool_registry)
 
@@ -927,7 +929,9 @@ async def get_plan(plan_id: str, scope: str) -> ProjectPlan:
 @app.get("/autonomy/plans/{plan_id}")
 async def autonomy_status(plan_id: str, scope: str) -> dict[str, object]:
     try:
-        return autonomy_service.inspect(plan_id, scope)
+        status = autonomy_service.inspect(plan_id, scope)
+        status["team"] = team_coordinator.get_for_plan(plan_id, scope)
+        return status
     except ValueError:
         raise HTTPException(status_code=404, detail="Autonomous plan not found") from None
 

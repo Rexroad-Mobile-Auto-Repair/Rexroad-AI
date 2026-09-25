@@ -53,6 +53,11 @@ class AutonomousTeamCoordinator:
             return None
         return {"team_id": row[0], "plan_id": row[1], "scope": row[2], "workspace": row[3], "status": row[4], "members": json.loads(row[5]), "metadata": json.loads(row[6]), "created_at": row[7], "completed_at": row[8]}
 
+    def get_for_plan(self, plan_id: str, scope: str) -> dict[str, Any] | None:
+        with sqlite3.connect(self._path) as db:
+            row = db.execute("SELECT team_id FROM autonomous_teams WHERE plan_id=? AND scope=? ORDER BY created_at DESC LIMIT 1", (plan_id, scope)).fetchone()
+        return self.get(row[0], scope) if row else None
+
     def run(self, team_id: str, scope: str, bridge: Any, authorizations: dict[str, Any], max_steps: int = 1) -> dict[str, Any]:
         team = self.get(team_id, scope)
         if team is None:
@@ -65,7 +70,7 @@ class AutonomousTeamCoordinator:
             if member is not None:
                 member["status"] = item["status"]
                 member["result_refs"] = [item.get("trace_id")] if item.get("trace_id") else []
-        status = "completed" if result["plan_status"] == "completed" else "active"
+        status = "completed" if all(item["status"] == "completed" for item in members) else "active"
         completed_at = datetime.now(UTC).isoformat() if status == "completed" else None
         with sqlite3.connect(self._path) as db:
             db.execute("UPDATE autonomous_teams SET status=?, members_json=?, completed_at=? WHERE team_id=? AND scope=?", (status, json.dumps(members), completed_at, team_id, scope))
