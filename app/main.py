@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentLoopLimitError, AgentService, AgentSessionError
+from app.autonomy.planner import GoalDecompositionService, GoalRequest
 from app.autonomy.service import AutonomousContinuationService
 from app.coding_actions import (
     CodingJobActionRequest,
@@ -190,6 +191,7 @@ execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan
 execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
 plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal, lambda workspace, scope, reason: project_history_service.capture_after_success(workspace, scope, reason))
 autonomy_service = AutonomousContinuationService(plan_service, plan_execution)
+goal_decomposition_service = GoalDecompositionService(provider_registry, navigator, autonomy_service)
 execution_trace_service = ExecutionTraceService(action_journal)
 project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
@@ -902,6 +904,15 @@ async def autonomy_status(plan_id: str, scope: str) -> dict[str, object]:
         return autonomy_service.inspect(plan_id, scope)
     except ValueError:
         raise HTTPException(status_code=404, detail="Autonomous plan not found") from None
+
+
+@app.post("/autonomy/decompose")
+async def decompose_autonomous_goal(request: GoalRequest) -> dict[str, object]:
+    try:
+        output, plan = await goal_decomposition_service.decompose(request, provider_name=settings.default_provider, model=get_default_model(settings, settings.default_provider))
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)[:300]) from None
+    return {"plan": plan, "decomposition": output}
 
 
 @app.post("/autonomy/plans/{plan_id}/cancel", response_model=ProjectPlan)
