@@ -126,15 +126,21 @@ class ToolRegistry:
 
     def review_approval(self, request_id: str, scope: str, approve: bool) -> ToolApprovalRequest:
         current = self._approval_requests.get(request_id)
-        if current is None or current[0].scope != scope:
-            raise KeyError(request_id)
-        request, capability = current
+        if current is None:
+            request = self._load_request(request_id, scope)
+            capability = None
+        else:
+            if current[0].scope != scope:
+                raise KeyError(request_id)
+            request, capability = current
         if request.status != "pending":
             return request
         status = "approved" if approve else "rejected"
         updated = ToolApprovalRequest(request.id, request.tool, request.scope, request.session_id, request.arguments_fingerprint, request.summary, status)
         if approve:
-            auth = self._authorizations[next(token for token, item in self._authorizations.items() if item.tool == request.tool and item.scope == request.scope and item.session_id == request.session_id)]
+            auth = next((item for item in self._authorizations.values() if item.tool == request.tool and item.scope == request.scope and item.session_id == request.session_id), None)
+            if auth is None:
+                auth = self.authorize(request.tool, request.scope, request.session_id)
             capability = ToolApproval(str(uuid4()), auth.token, request.tool, request.scope, request.session_id, request.arguments_fingerprint)
             self._approvals[capability.token] = capability
         self._approval_requests[request_id] = (updated, capability)

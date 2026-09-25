@@ -116,7 +116,7 @@ class CodingWorkflowService:
     async def start_analysis(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_analysis": raise ValueError("analysis cannot start")
-        request = SupervisorDispatchRequest(worker_profile="code_analyst", scope=scope, workspace=item.workspace, instruction=f"Inspect coding objective: {item.instruction}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id)
+        request = SupervisorDispatchRequest(worker_profile="code_analyst", scope=scope, workspace=item.workspace, instruction=f"Inspect code for coding objective: {item.instruction}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id)
         auth = self.agents.authorize_dispatch(request); result = await self.agents.dispatch(request, auth)
         audit = self.agents.audits(scope, 100); dispatch_id = audit[0].dispatch_id if audit and audit[0].task_id == result.task_id else None
         item = item.model_copy(update={"analyst_task_id": result.task_id, "analyst_dispatch_id": dispatch_id, "status": "awaiting_analysis_review" if result.status == "completed" else "failed"})

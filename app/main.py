@@ -1086,18 +1086,24 @@ async def get_coding_guidance(workflow_id: str, scope: str) -> CodingJobGuidance
 async def dispatch_coding_job_action(workflow_id: str, request: CodingJobActionRequest) -> CodingJobActionResult:
     try:
         result = await coding_action_service.dispatch(workflow_id, request)
-        workflow = coding_workflow_service.get(workflow_id, request.scope)
-        if workflow is not None and workflow.parent_plan_id:
-            autonomy_service.continue_with_bridge(
-                plan_id=workflow.parent_plan_id,
-                scope=request.scope,
-                bridge=planned_execution_bridge,
-                authorizations={},
-                max_steps=10,
-            )
+        await _resume_coding_workflow(workflow_id, request.scope)
         return result
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="Coding job action unavailable") from exc
+
+
+async def _resume_coding_workflow(workflow_id: str, scope: str) -> None:
+    for _ in range(3):
+        workflow = coding_workflow_service.get(workflow_id, scope)
+        if workflow is None:
+            return
+        if not workflow.parent_plan_id:
+            return
+        autonomy_service.continue_with_bridge(plan_id=workflow.parent_plan_id, scope=scope, bridge=planned_execution_bridge, authorizations={}, max_steps=10)
+        job = coding_job_service.get(workflow_id, scope)
+        if job is None or job.next_action.action not in {"execute_patches", "execute_checks", "start_verifier"} or not job.next_action.allowed:
+            return
+        await coding_action_service.dispatch(workflow_id, CodingJobActionRequest(action=job.next_action.action, scope=scope))
 
 @app.get("/supervisor-coding-workflows/{workflow_id}/proposal/preview")
 async def preview_coding_proposal(workflow_id: str, scope: str) -> dict:
