@@ -35,7 +35,7 @@ class AutonomousTeamCoordinator:
         for step_id in ready[:max_members]:
             step = next(item for item in plan.steps if item.id == step_id)
             spec = bridge.build_spec(plan, step)
-            if spec.mutation_required or spec.worker not in {"direct", "code_analyst", "researcher", "verifier"}:
+            if spec.mutation_required or spec.worker not in {"direct", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst", "researcher", "verifier"}:
                 continue
             members.append({"member_id": str(uuid4()), "worker": spec.worker, "task_ids": [step_id], "status": "assigned", "result_refs": []})
         if len(members) < 2:

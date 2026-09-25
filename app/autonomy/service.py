@@ -154,7 +154,7 @@ class AutonomousContinuationService:
             for step_id in state["ready"]:
                 step = next(item for item in plan.steps if item.id == step_id)
                 spec, execution = bridge.resolve(plan, step, authorizations)
-                if execution is None or spec.mutation_required or spec.worker not in {"direct", "code_analyst"}:
+                if execution is None or spec.mutation_required or spec.worker not in {"direct", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst"}:
                     continue
                 if any(self._conflicts(spec, other[0]) for other in candidates):
                     continue

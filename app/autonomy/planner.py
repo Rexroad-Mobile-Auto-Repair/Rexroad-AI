@@ -6,6 +6,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from app.autonomy.profiles import PROFILES, get_profile
 from app.autonomy.service import AutonomousContinuationService
 from app.navigation.service import WorkspaceNavigator
 from app.plans.models import PlanCreate, PlanStepCreate, ProjectPlan
@@ -14,7 +15,7 @@ from app.providers.registry import ProviderRegistry
 from app.structured_output import StructuredOutputService
 from app.supervisor_policy import SupervisorPolicy, SupervisorRecommendationRequest
 
-WorkerKind = Literal["direct", "researcher", "code_analyst", "verifier", "supervised_coding", "mcp", "skill"]
+WorkerKind = Literal["direct", "researcher", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst", "verifier", "supervised_coding", "mcp", "skill"]
 
 
 class GoalRequest(BaseModel):
@@ -42,7 +43,7 @@ class PlannerOutput(BaseModel):
 class GoalDecompositionService:
     """Structured planner that validates a graph before handing it to autonomy."""
 
-    ALLOWED_WORKERS: ClassVar[frozenset[str]] = frozenset({"direct", "researcher", "code_analyst", "verifier", "supervised_coding", "mcp", "skill"})
+    ALLOWED_WORKERS: ClassVar[frozenset[str]] = frozenset({"direct", *PROFILES, "supervised_coding", "mcp", "skill"})
     ALLOWED_TOOL_CATEGORIES: ClassVar[frozenset[str]] = frozenset({"read", "repo_map", "navigation", "git_status", "filesystem_read", "write", "execute", "mcp", "skill", "supervised_coding", "research"})
 
     def __init__(self, providers: ProviderRegistry, navigator: WorkspaceNavigator, autonomy: AutonomousContinuationService, policy: SupervisorPolicy | None = None) -> None:
@@ -87,6 +88,8 @@ class GoalDecompositionService:
         key_set = set(keys)
         graph = {task.key: task.dependencies for task in output.tasks}
         for task in output.tasks:
+            if task.worker in PROFILES:
+                get_profile(task.worker)
             if task.worker not in self.ALLOWED_WORKERS or task.key in task.dependencies or any(dep not in key_set for dep in task.dependencies):
                 raise ValueError("invalid task dependency or worker")
         visiting: set[str] = set(); visited: set[str] = set()
