@@ -64,6 +64,7 @@ from app.project_history import (
 from app.project_state import ProjectState, ProjectStateService
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
+from app.skills.service import SkillService
 from app.subagents import (
     SubAgentContribution,
     SubAgentIncorporation,
@@ -150,6 +151,7 @@ settings = Settings()
 provider_registry = build_provider_registry(settings)
 
 workspace_registry = build_workspace_registry(settings)
+skill_service = SkillService()
 filesystem = ReadOnlyFilesystem(workspace_registry)
 git = ReadOnlyGit(workspace_registry)
 knowledge_service = KnowledgeService(
@@ -201,6 +203,8 @@ agent_service = AgentService(
     journal=action_journal,
     allow_tools_without_workspace=False,
     include_identity_context=True,
+    skill_service=skill_service,
+    skill_workspace_resolver=workspace_registry.get_root,
 )
 diagnostics = build_local_diagnostics(settings)
 
@@ -212,6 +216,18 @@ async def health() -> dict[str, str]:
         "service": "rexroad-ai",
         "version": "0.1.0",
     }
+
+
+@app.get("/skills")
+async def list_skills(workspace: str | None = None) -> list[dict[str, object]]:
+    root = workspace_registry.get_root(workspace) if workspace else None
+    skills, _errors = skill_service.discover(root)
+    return [
+        {"name": skill.name, "description": skill.description, "version": skill.version,
+         "origin": skill.origin, "user_invocable": skill.user_invocable,
+         "model_invocable": skill.model_invocable}
+        for skill in skills[:100]
+    ]
 
 
 @app.get("/operator", response_class=HTMLResponse)

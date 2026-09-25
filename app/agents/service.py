@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from uuid import uuid4
 
 from app.agents.context import (
@@ -21,6 +22,7 @@ from app.knowledge.serialization import serialize_search_results
 from app.providers.factory import get_default_model
 from app.providers.models import ModelRequest, ModelResponse
 from app.providers.registry import ProviderRegistry
+from app.skills.service import SkillService
 from app.tools.models import ModelMessage
 from app.tools.registry import ToolRegistry
 
@@ -54,6 +56,8 @@ class AgentService:
         allow_tools_without_workspace: bool = True,
         include_identity_context: bool = False,
         compaction_service: ContextCompactionService | None = None,
+        skill_service: SkillService | None = None,
+        skill_workspace_resolver: Callable[[str], Path] | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -64,6 +68,8 @@ class AgentService:
         self._allow_tools_without_workspace = allow_tools_without_workspace
         self._include_identity_context = include_identity_context
         self._compaction = compaction_service or ContextCompactionService(journal)
+        self._skills = skill_service
+        self._skill_workspace_resolver = skill_workspace_resolver
 
     @staticmethod
     def _history_messages(journal: ActionJournal, session_id: str, budget: int) -> list[ModelMessage]:
@@ -120,6 +126,18 @@ class AgentService:
             provider_name,
         )
 
+        skill = None
+        skill_args: dict[str, str] = {}
+        skill_invocation = SkillService.invocation(request.message)
+        if skill_invocation is not None:
+            if self._skills is None:
+                raise AgentSessionError("Filesystem skills are not configured")
+            skill_name, skill_args = skill_invocation
+            skill_root = self._skill_workspace_resolver(request.workspace) if request.workspace and self._skill_workspace_resolver else None
+            skill = self._skills.get(skill_name, skill_root)
+            if skill is None or not skill.user_invocable:
+                raise AgentSessionError("Skill not found or not user-invocable")
+
         session_id = request.session_id or str(uuid4())
         workspace = request.workspace
         history: list[ModelMessage] = []
@@ -151,6 +169,8 @@ class AgentService:
 
         effective_request = request.model_copy(update={"workspace": workspace})
         tool_specs = self._tool_specs_for_request(effective_request)
+        if skill is not None and skill.allowed_tools:
+            tool_specs = [spec for spec in tool_specs if spec.name in set(skill.allowed_tools)]
         allowed_tool_names = {spec.name for spec in tool_specs}
 
         system_context = AGENT_WORKFLOW_PROMPT
@@ -165,9 +185,19 @@ class AgentService:
             *history,
             ModelMessage(
                 role="user",
-                content=(f"Selected workspace context: {workspace}.\n" if workspace else "") + request.message,
+                content=(f"Selected workspace context: {workspace}.\n" if workspace else "")
+                + (f"Skill instructions ({skill.name} v{skill.version}):\n{self._skills.render(skill, skill_args)}\n\n" if skill is not None else "")
+                + request.message,
             ),
         ]
+        if skill is not None and self._journal is not None:
+            self._journal.append_event(
+                session_id=session_id,
+                event_type="skill_invocation",
+                payload={"name": skill.name, "version": skill.version, "origin": skill.origin,
+                         "workspace": workspace, "arguments": {k: v[:200] for k, v in skill_args.items()},
+                         "effective_allowed_tools": sorted(allowed_tool_names)},
+            )
         compaction = await self._compaction.compact(
             session_id=session_id,
             messages=messages,
