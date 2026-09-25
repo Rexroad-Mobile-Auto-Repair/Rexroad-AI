@@ -38,6 +38,27 @@ def test_mutation_waits_without_self_authorization(tmp_path: Path) -> None:
     assert result["waiting"] == "waiting_for_approval"
 
 
+def test_code_analyst_uses_safe_read_only_route(tmp_path: Path) -> None:
+    _, tools, _, continuation = build(tmp_path)
+
+    class UnexpectedDispatcher:
+        def dispatch(self, spec):
+            raise AssertionError("read-only code analysis must not require a worker workflow")
+
+    plans = PlanService(tmp_path / "code-analyst-plans.sqlite3")
+    continuation = AutonomousContinuationService(plans, PlanExecutionCoordinator(plans, tools))
+    bridge = PlannedTaskExecutionBridge(plans, continuation, UnexpectedDispatcher())
+    plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="analyze", steps=[
+        PlanStepCreate(title="analyze", metadata={"worker": "code_analyst", "tool_category": "read"}),
+    ]))
+    authorization = tools.authorize("workspace.repo_map", "s")
+
+    spec, execution = bridge.resolve(plan, plan.steps[0], {"workspace.repo_map": authorization})
+
+    assert spec.tool_name == "workspace.repo_map"
+    assert execution is not None
+
+
 def test_unknown_worker_fails_safely(tmp_path: Path) -> None:
     _, _, bridge, continuation = build(tmp_path)
     plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="bad", steps=[PlanStepCreate(title="bad", metadata={"worker": "unknown"})]))

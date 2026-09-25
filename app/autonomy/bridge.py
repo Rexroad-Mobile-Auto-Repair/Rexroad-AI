@@ -65,7 +65,7 @@ class PlannedTaskExecutionBridge:
 
     def resolve(self, plan: ProjectPlan, step: PlanStep, authorizations: dict[str, ToolAuthorization] | None = None) -> tuple[TaskExecutionSpec, StepExecutionSpec | None]:
         spec = self.build_spec(plan, step)
-        if (spec.worker != "direct" or spec.mutation_required) and self._dispatcher is not None:
+        if (spec.worker not in {"direct", "code_analyst"} or spec.mutation_required) and self._dispatcher is not None:
             result = self._dispatcher.dispatch(spec)
             return spec.model_copy(update={"execution_status": result.get("status", "waiting_for_worker_dispatch"), "worker_reference": result.get("workflow_id")}), None
         if spec.mutation_required:
