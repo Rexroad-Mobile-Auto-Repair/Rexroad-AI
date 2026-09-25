@@ -4,6 +4,7 @@ from app.memory.proposals import ProposalService
 from app.memory.service import MemoryService
 from app.plans.service import PlanService
 from app.tools.checks import WorkspaceChecks
+from app.tools.commands import CommandRunner
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
 from app.tools.memory import MemoryTools
@@ -23,6 +24,19 @@ def build_tool_registry(
 ) -> ToolRegistry:
     registry = ToolRegistry(database_path)
     checks = WorkspaceChecks(filesystem.workspaces)
+    commands = CommandRunner(filesystem.workspaces)
+    registry.register(ToolDefinition(
+        name="workspace.run_command",
+        description="Run one approved, bounded development command inside a workspace.",
+        permission="workspace_check",
+        handler=commands.run_command,
+        parameters={"type": "object", "properties": {
+            "workspace": {"type": "string"}, "command": {"type": "string"},
+            "args": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+            "cwd": {"type": "string", "default": "."},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600}},
+            "required": ["workspace", "command"], "additionalProperties": False},
+    ))
 
     registry.register(
         ToolDefinition(

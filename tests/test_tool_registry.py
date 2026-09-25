@@ -135,13 +135,14 @@ def test_build_tool_registry_contains_expected_tools(
         "git.log",
         "git.show",
         "git.status",
-        "workspace.run_check",
-    ]
+            "workspace.run_check",
+            "workspace.run_command",
+        ]
 
     assert registry.get("filesystem.apply_patch").permission == "filesystem_write"
     assert registry.get("workspace.run_check").permission == "workspace_check"
     assert all(
         tool.permission == "read"
         for tool in registry.definitions()
-        if tool.name not in {"filesystem.apply_patch", "workspace.run_check"}
+        if tool.name not in {"filesystem.apply_patch", "workspace.run_check", "workspace.run_command"}
     )

@@ -11,7 +11,7 @@ def read_only_intent(message: str) -> bool:
 def requests_check_execution(message: str) -> bool:
     text = message.casefold()
     return any(phrase in text for phrase in (
-        "run the tests", "run relevant tests", "run the relevant tests", "run pytest", "run ruff", "run the configured checks", "execute the tests",
+        "run the tests", "run relevant tests", "run the relevant tests", "run pytest", "run ruff", "run git status", "run git diff", "run python --version", "run the configured checks", "execute the tests", "execute this build command", "run this command",
     )) and not read_only_intent(message)
 
 
