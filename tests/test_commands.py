@@ -1,3 +1,4 @@
+from app.agents.context import requests_command_execution
 from app.policy.workspaces import WorkspaceRegistry
 from app.tools.commands import CommandPolicy, CommandRisk, CommandRunner
 
@@ -31,3 +32,7 @@ def test_cwd_escape_and_missing_executable(tmp_path):
 
 def test_output_is_bounded_by_policy():
     assert CommandPolicy.classify("python", ["-c", "print('x')"]) == CommandRisk.DENIED
+
+
+def test_explicit_read_only_command_intent_is_exposed():
+    assert requests_command_execution("Run git status for this project and do not modify anything")

@@ -11,6 +11,7 @@ from app.agents.context import (
     build_agent_system_context,
     read_only_intent,
     requests_check_execution,
+    requests_command_execution,
 )
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.config import Settings
@@ -113,7 +114,8 @@ class AgentService:
         specs = []
         for spec in self._tools.specs():
             definition = self._tools.get(spec.name)
-            if definition.permission == "read" or (definition.permission == "workspace_check" and check_allowed):
+            command_allowed = definition.name == "workspace.run_command" and requests_command_execution(request.message)
+            if definition.permission == "read" or (definition.permission == "workspace_check" and (check_allowed or command_allowed)):
                 specs.append(spec)
         return specs
 

@@ -15,6 +15,14 @@ def requests_check_execution(message: str) -> bool:
     )) and not read_only_intent(message)
 
 
+def requests_command_execution(message: str) -> bool:
+    text = message.casefold()
+    return any(phrase in text for phrase in (
+        "run git status", "run git diff", "run git log", "run python --version",
+        "run this command", "execute this command",
+    ))
+
+
 def build_agent_system_context(*, workspace: str | None, tools: list[ToolSpec]) -> str:
     lines = [
         "You are Rexroad AI, a locally operated AI/agent application.",
