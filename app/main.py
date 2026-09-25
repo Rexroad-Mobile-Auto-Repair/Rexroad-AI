@@ -39,6 +39,7 @@ from app.memory.models import MemoryCreate, MemoryRecord, MemoryUpdate
 from app.memory.proposals import MemoryProposal, MemoryProposalCreate, ProposalService
 from app.memory.service import MemoryService
 from app.memory.store import MemoryStore
+from app.navigation.service import WorkspaceNavigator
 from app.openai_compat import (
     REXROAD_MODEL,
     OpenAIChatRequest,
@@ -171,6 +172,7 @@ knowledge_service = KnowledgeService(
     max_extracted_sections=settings.knowledge_max_extracted_sections,
     max_document_chunks=settings.knowledge_max_document_chunks,
 )
+navigator = WorkspaceNavigator(workspace_registry, KnowledgeStore(settings.knowledge_index_path))
 cross_workspace_service = CrossWorkspaceKnowledgeService(workspace_registry, knowledge_service)
 action_journal = ActionJournal(
     settings.action_journal_path
@@ -180,7 +182,7 @@ proposal_service = ProposalService(settings.action_journal_path, memory_service)
 plan_service = PlanService(settings.action_journal_path)
 tool_registry = build_tool_registry(
     filesystem, git, knowledge_service, memory_service, proposal_service, plan_service,
-    settings.action_journal_path, cross_workspace=cross_workspace_service,
+    settings.action_journal_path, cross_workspace=cross_workspace_service, navigator=navigator,
 )
 mcp_adapter = MCPAdapter(load_mcp_server_configs(Path(settings.action_journal_path).parent / "mcp_servers.json"))
 execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan_service, tool_registry)

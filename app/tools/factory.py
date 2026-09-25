@@ -2,6 +2,7 @@ from app.knowledge.cross_workspace import CrossWorkspaceKnowledgeService
 from app.knowledge.service import KnowledgeService
 from app.memory.proposals import ProposalService
 from app.memory.service import MemoryService
+from app.navigation.service import WorkspaceNavigator
 from app.plans.service import PlanService
 from app.tools.checks import WorkspaceChecks
 from app.tools.commands import CommandRunner
@@ -21,8 +22,17 @@ def build_tool_registry(
     plans: PlanService | None = None,
     database_path: str | None = None,
     cross_workspace: CrossWorkspaceKnowledgeService | None = None,
+    navigator: WorkspaceNavigator | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(database_path)
+    if navigator is not None:
+        registry.register(ToolDefinition(
+            name="workspace.repo_map",
+            description="Read a bounded live repository map, symbol lookup, related files, tests, entry points, or Git-aware summary.",
+            permission="read",
+            handler=navigator.navigate,
+            parameters={"type": "object", "properties": {"workspace": {"type": "string"}, "operation": {"type": "string", "enum": ["map", "find_symbol", "related", "tests", "entry_points", "git"]}, "query": {"type": "string", "maxLength": 200}, "relative_path": {"type": "string"}}, "required": ["workspace"], "additionalProperties": False},
+        ))
     checks = WorkspaceChecks(filesystem.workspaces)
     commands = CommandRunner(filesystem.workspaces)
     registry.register(ToolDefinition(
