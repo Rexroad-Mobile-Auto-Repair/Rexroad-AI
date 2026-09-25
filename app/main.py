@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentLoopLimitError, AgentService, AgentSessionError
+from app.autonomy.service import AutonomousContinuationService
 from app.coding_actions import (
     CodingJobActionRequest,
     CodingJobActionResult,
@@ -188,6 +189,7 @@ mcp_adapter = MCPAdapter(load_mcp_server_configs(Path(settings.action_journal_pa
 execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan_service, tool_registry)
 execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
 plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal, lambda workspace, scope, reason: project_history_service.capture_after_success(workspace, scope, reason))
+autonomy_service = AutonomousContinuationService(plan_service, plan_execution)
 execution_trace_service = ExecutionTraceService(action_journal)
 project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
@@ -891,6 +893,25 @@ async def get_plan(plan_id: str, scope: str) -> ProjectPlan:
     plan = plan_service.get(plan_id, scope)
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan not found")
+    return plan
+
+
+@app.get("/autonomy/plans/{plan_id}")
+async def autonomy_status(plan_id: str, scope: str) -> dict[str, object]:
+    try:
+        return autonomy_service.inspect(plan_id, scope)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Autonomous plan not found") from None
+
+
+@app.post("/autonomy/plans/{plan_id}/cancel", response_model=ProjectPlan)
+async def cancel_autonomy(plan_id: str, scope: str) -> ProjectPlan:
+    try:
+        plan = autonomy_service.cancel(plan_id, scope)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Autonomous plan cannot be cancelled") from None
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Autonomous plan not found")
     return plan
 
 
