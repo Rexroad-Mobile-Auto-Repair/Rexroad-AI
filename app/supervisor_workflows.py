@@ -162,6 +162,16 @@ class SupervisorResearchVerifyWorkflow:
             self._update(workflow_id, scope, researcher_review_status=review.status)
         return review.status if review else None
 
+    def review_research(self, workflow_id: str, scope: str, status: str, reviewer_session_id: str | None = None, note: str | None = None) -> ResearchVerifyWorkflowResult:
+        workflow = self.get(workflow_id, scope)
+        if workflow is None or not workflow.researcher_task_id or workflow.status != "awaiting_review" or workflow.researcher_review_status in {"accepted", "rejected"}:
+            raise ValueError("research review unavailable")
+        if status not in {"accepted", "rejected"}:
+            raise ValueError("invalid research review")
+        review = self._agents.review(workflow.researcher_task_id, scope, status, reviewer_session_id, note)
+        self._update(workflow_id, scope, researcher_review_status=review.status, status="awaiting_review" if status == "accepted" else "failed", final_outcome=None if status == "accepted" else "rejected")
+        return self.result(self.get(workflow_id, scope))
+
     def cancel(self, workflow_id: str, scope: str, reason: str | None = None) -> ResearchVerifyWorkflow:
         workflow = self.get(workflow_id, scope)
         if workflow is None:

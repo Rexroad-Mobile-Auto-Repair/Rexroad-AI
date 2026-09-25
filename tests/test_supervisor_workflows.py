@@ -16,8 +16,8 @@ async def test_research_verify_workflow_requires_explicit_review(tmp_path):
     assert started.workflow.researcher_dispatch_id
     with pytest.raises(ValueError):
         await workflows.start_verification(workflow.workflow_id, "s")
-    review = agents.review(started.workflow.researcher_task_id or "", "s", "accepted", "supervisor")
-    assert review.status == "accepted"
+    reviewed = workflows.review_research(workflow.workflow_id, "s", "accepted", "supervisor")
+    assert reviewed.researcher_review_status == "accepted"
     verified = await workflows.start_verification(workflow.workflow_id, "s")
     assert verified.workflow.status == "awaiting_verifier_review"
     assert verified.verifier is not None
@@ -35,6 +35,21 @@ async def test_research_verify_workflow_requires_explicit_review(tmp_path):
     assert verified.workflow.parent_session_id == "parent"
     assert verified.workflow.plan_id == "plan"
     assert verified.workflow.step_id == "step"
+
+
+@pytest.mark.asyncio
+async def test_research_review_action_is_scoped_and_stale_safe(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    agents = SubAgentService(path)
+    workflows = SupervisorResearchVerifyWorkflow(path, agents)
+    workflow = workflows.create(ResearchVerifyWorkflowCreate(scope="s", instruction="research this"))
+    await workflows.start_research(workflow.workflow_id, "s")
+    with pytest.raises(ValueError):
+        workflows.review_research(workflow.workflow_id, "other", "accepted")
+    accepted = workflows.review_research(workflow.workflow_id, "s", "accepted", "supervisor")
+    assert accepted.workflow.status == "awaiting_review"
+    with pytest.raises(ValueError):
+        workflows.review_research(workflow.workflow_id, "s", "accepted", "supervisor")
 
 
 @pytest.mark.asyncio

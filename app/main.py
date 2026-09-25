@@ -72,6 +72,11 @@ from app.project_history import (
 from app.project_state import ProjectState, ProjectStateService
 from app.providers.factory import build_provider_registry, get_default_model
 from app.providers.status import ProviderStatus
+from app.research_actions import (
+    ResearchWorkflowActionRequest,
+    ResearchWorkflowActionResult,
+    ResearchWorkflowActionService,
+)
 from app.skills.service import SkillService
 from app.subagents import (
     SubAgentContribution,
@@ -206,6 +211,7 @@ coding_job_service = CodingJobService(coding_workflow_service, coding_proposal_s
 coding_action_service = SupervisorCodingActionService(coding_job_service, coding_workflow_service, coding_proposal_service, tool_registry)
 coding_guidance_service = CodingGuidanceService(coding_job_service)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
+research_action_service = ResearchWorkflowActionService(supervisor_workflow_service)
 planned_worker_dispatcher = PlannedWorkerDispatcher(coding=coding_workflow_service, research=supervisor_workflow_service)
 planned_execution_bridge = PlannedTaskExecutionBridge(plan_service, autonomy_service, planned_worker_dispatcher)
 supervisor_policy = SupervisorPolicy()
@@ -718,6 +724,21 @@ async def start_verification_workflow(workflow_id: str, scope: str) -> ResearchV
         return await supervisor_workflow_service.start_verification(workflow_id, scope)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Verification workflow unavailable") from exc
+
+
+async def _resume_research_plan(result: ResearchWorkflowActionResult) -> None:
+    if result.plan_id:
+        autonomy_service.continue_with_bridge(plan_id=result.plan_id, scope=result.scope, bridge=planned_execution_bridge, authorizations={}, max_steps=10)
+
+
+@app.post("/supervisor-research-workflows/{workflow_id}/action", response_model=ResearchWorkflowActionResult)
+async def dispatch_research_workflow_action(workflow_id: str, scope: str, request: ResearchWorkflowActionRequest) -> ResearchWorkflowActionResult:
+    try:
+        result = await research_action_service.dispatch(workflow_id, scope, request)
+        await _resume_research_plan(result)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Research workflow action unavailable") from exc
 
 
 @app.post("/supervisor-workflows/{workflow_id}/cancel", response_model=ResearchVerifyWorkflow)

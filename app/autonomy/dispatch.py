@@ -28,7 +28,7 @@ class PlannedWorkerDispatcher:
                 return {"status": "waiting_for_unavailable_worker", "reason": "research workflow unavailable"}
             existing = next((item for item in self._research.list(spec.scope, 100) if item.plan_id == spec.plan_id and item.step_id == spec.step_id), None) if hasattr(self._research, "list") else None
             if existing is not None:
-                return {"status": "waiting_for_worker_dispatch", "workflow_id": existing.workflow_id, "workflow_status": existing.status}
+                return {"status": self._research_status(existing), "workflow_id": existing.workflow_id, "workflow_status": existing.status}
             workflow = self._research.create(ResearchVerifyWorkflowCreate(scope=spec.scope, workspace=spec.workspace, instruction=spec.objective, plan_id=spec.plan_id, step_id=spec.step_id))
             return {"status": "waiting_for_worker_dispatch", "workflow_id": workflow.workflow_id, "workflow_status": workflow.status}
         if spec.worker in {"mcp", "skill"}:
@@ -44,3 +44,11 @@ class PlannedWorkerDispatcher:
         if status in {"awaiting_analysis", "awaiting_analysis_review", "analysis_accepted", "implementation_ready", "implementing", "awaiting_checks", "awaiting_verification", "awaiting_verifier_review"}:
             return "waiting_for_workflow"
         return "waiting_for_approval"
+
+    @staticmethod
+    def _research_status(workflow: Any) -> str:
+        if workflow.status == "completed" or (workflow.status == "awaiting_review" and workflow.researcher_review_status == "accepted"):
+            return "completed"
+        if workflow.status in {"failed", "cancelled"}:
+            return workflow.status
+        return "waiting_for_worker_dispatch"
