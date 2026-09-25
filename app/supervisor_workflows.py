@@ -59,6 +59,10 @@ class SupervisorResearchVerifyWorkflow:
         with sqlite3.connect(self._path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS supervisor_workflows (workflow_id TEXT PRIMARY KEY, scope TEXT NOT NULL, workspace TEXT, instruction TEXT NOT NULL, researcher_task_id TEXT, researcher_dispatch_id TEXT, researcher_review_status TEXT, verifier_task_id TEXT, verifier_dispatch_id TEXT, status TEXT NOT NULL, parent_session_id TEXT, plan_id TEXT, step_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, cancellation_reason TEXT, cancelled_at TEXT, verifier_review_status TEXT, final_outcome TEXT)")
             columns = {row[1] for row in db.execute("PRAGMA table_info(supervisor_workflows)")}
+            if "researcher_dispatch_id" not in columns:
+                db.execute("ALTER TABLE supervisor_workflows ADD COLUMN researcher_dispatch_id TEXT")
+            if "verifier_dispatch_id" not in columns:
+                db.execute("ALTER TABLE supervisor_workflows ADD COLUMN verifier_dispatch_id TEXT")
             if "cancellation_reason" not in columns:
                 db.execute("ALTER TABLE supervisor_workflows ADD COLUMN cancellation_reason TEXT")
             if "cancelled_at" not in columns:
@@ -72,12 +76,12 @@ class SupervisorResearchVerifyWorkflow:
         now = datetime.now(UTC)
         workflow = ResearchVerifyWorkflow(workflow_id=str(uuid4()), scope=request.scope, workspace=request.workspace, instruction=request.instruction, status="awaiting_research", parent_session_id=request.parent_session_id, plan_id=request.plan_id, step_id=request.step_id, created_at=now, updated_at=now)
         with sqlite3.connect(self._path) as db:
-            db.execute("INSERT INTO supervisor_workflows VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)", (workflow.workflow_id, workflow.scope, workflow.workspace, workflow.instruction, workflow.status, workflow.parent_session_id, workflow.plan_id, workflow.step_id, now.isoformat(), now.isoformat()))
+            db.execute("INSERT INTO supervisor_workflows (workflow_id, scope, workspace, instruction, status, parent_session_id, plan_id, step_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (workflow.workflow_id, workflow.scope, workflow.workspace, workflow.instruction, workflow.status, workflow.parent_session_id, workflow.plan_id, workflow.step_id, now.isoformat(), now.isoformat()))
         return workflow
 
     def get(self, workflow_id: str, scope: str) -> ResearchVerifyWorkflow | None:
         with sqlite3.connect(self._path) as db:
-            row = db.execute("SELECT * FROM supervisor_workflows WHERE workflow_id=? AND scope=?", (workflow_id, scope)).fetchone()
+            row = db.execute(f"SELECT {self._columns()} FROM supervisor_workflows WHERE workflow_id=? AND scope=?", (workflow_id, scope)).fetchone()
         return self._model(row) if row else None
 
     def _model(self, row: tuple) -> ResearchVerifyWorkflow:
@@ -86,7 +90,7 @@ class SupervisorResearchVerifyWorkflow:
     def list(self, scope: str, limit: int = 20, status: str | None = None) -> list[ResearchVerifyWorkflow]:
         if not scope.strip() or limit < 1 or limit > 100 or status not in {None, "awaiting_research", "awaiting_review", "awaiting_verifier_review", "completed", "failed", "cancelled"}:
             raise ValueError("invalid workflow query")
-        query = "SELECT * FROM supervisor_workflows WHERE scope=?"
+        query = f"SELECT {self._columns()} FROM supervisor_workflows WHERE scope=?"
         values: list[object] = [scope]
         if status:
             query += " AND status=?"
@@ -96,6 +100,10 @@ class SupervisorResearchVerifyWorkflow:
         with sqlite3.connect(self._path) as db:
             rows = db.execute(query, values).fetchall()
         return [self._model(row) for row in rows]
+
+    @staticmethod
+    def _columns() -> str:
+        return "workflow_id, scope, workspace, instruction, researcher_task_id, researcher_dispatch_id, researcher_review_status, verifier_task_id, verifier_dispatch_id, status, parent_session_id, plan_id, step_id, created_at, updated_at, cancellation_reason, cancelled_at, verifier_review_status, final_outcome"
 
     async def start_research(self, workflow_id: str, scope: str) -> ResearchVerifyWorkflowResult:
         workflow = self.get(workflow_id, scope)

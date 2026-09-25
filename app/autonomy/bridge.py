@@ -36,7 +36,7 @@ class PlannedTaskExecutionBridge:
     """Resolve persisted planner metadata into existing authorized execution calls."""
 
     WORKERS: ClassVar[frozenset[str]] = frozenset({"direct", "researcher", "code_analyst", "verifier", "supervised_coding", "mcp", "skill"})
-    TOOL_CATEGORIES: ClassVar[frozenset[str]] = frozenset({"read", "repo_map", "navigation", "git_status", "filesystem_read", "mcp", "skill", "supervised_coding", "research"})
+    TOOL_CATEGORIES: ClassVar[frozenset[str]] = frozenset({"read", "repo_map", "navigation", "git_status", "filesystem_read", "write", "execute", "mcp", "skill", "supervised_coding", "research"})
 
     def __init__(self, plans: PlanService, continuation: AutonomousContinuationService, dispatcher: Any | None = None) -> None:
         self._plans = plans
@@ -65,7 +65,7 @@ class PlannedTaskExecutionBridge:
 
     def resolve(self, plan: ProjectPlan, step: PlanStep, authorizations: dict[str, ToolAuthorization] | None = None) -> tuple[TaskExecutionSpec, StepExecutionSpec | None]:
         spec = self.build_spec(plan, step)
-        if (spec.worker not in {"direct", "code_analyst", "verifier"} or spec.mutation_required) and self._dispatcher is not None:
+        if (spec.worker != "direct" or spec.mutation_required) and self._dispatcher is not None:
             result = self._dispatcher.dispatch(spec)
             return spec.model_copy(update={"execution_status": result.get("status", "waiting_for_worker_dispatch"), "worker_reference": result.get("workflow_id")}), None
         if spec.mutation_required:

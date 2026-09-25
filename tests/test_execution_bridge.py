@@ -104,3 +104,22 @@ def test_completed_external_workflow_advances_plan_once(tmp_path: Path) -> None:
     assert resumed["state"]["next"] == plan.steps[1].id
     repeated = continuation.continue_with_bridge(plan_id=plan.id, scope="s", bridge=bridge, authorizations={})
     assert repeated["completed"] == []
+
+
+def test_planner_tool_categories_route_specialized_workers(tmp_path: Path) -> None:
+    class Research:
+        def create(self, request):
+            return type("Workflow", (), {"workflow_id": "research-1", "status": "awaiting_review"})()
+
+        def list(self, scope, limit=20):
+            return []
+
+    plans = PlanService(tmp_path / "plans.sqlite3")
+    continuation = AutonomousContinuationService(plans, PlanExecutionCoordinator(plans, ToolRegistry()))
+    bridge = PlannedTaskExecutionBridge(plans, continuation, PlannedWorkerDispatcher(research=Research()))
+    plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="verify", steps=[
+        PlanStepCreate(title="verify", metadata={"worker": "verifier", "tool_category": "execute"}),
+    ]))
+    spec, execution = bridge.resolve(plan, plan.steps[0], {})
+    assert spec.execution_status == "waiting_for_worker_dispatch"
+    assert execution is None
