@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentLoopLimitError, AgentService, AgentSessionError
+from app.autonomy.bridge import PlannedTaskExecutionBridge
+from app.autonomy.dispatch import PlannedWorkerDispatcher
 from app.autonomy.planner import GoalDecompositionService, GoalRequest
 from app.autonomy.service import AutonomousContinuationService
 from app.coding_actions import (
@@ -191,6 +193,7 @@ execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan
 execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
 plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal, lambda workspace, scope, reason: project_history_service.capture_after_success(workspace, scope, reason))
 autonomy_service = AutonomousContinuationService(plan_service, plan_execution)
+planned_execution_bridge = PlannedTaskExecutionBridge(plan_service, autonomy_service)
 goal_decomposition_service = GoalDecompositionService(provider_registry, navigator, autonomy_service)
 execution_trace_service = ExecutionTraceService(action_journal)
 project_state_service = ProjectStateService(workspace_registry, git, memory_service, plan_service, execution_trace_service)
@@ -203,6 +206,8 @@ coding_job_service = CodingJobService(coding_workflow_service, coding_proposal_s
 coding_action_service = SupervisorCodingActionService(coding_job_service, coding_workflow_service, coding_proposal_service, tool_registry)
 coding_guidance_service = CodingGuidanceService(coding_job_service)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
+planned_worker_dispatcher = PlannedWorkerDispatcher(coding=coding_workflow_service, research=supervisor_workflow_service)
+planned_execution_bridge = PlannedTaskExecutionBridge(plan_service, autonomy_service, planned_worker_dispatcher)
 supervisor_policy = SupervisorPolicy()
 supervisor_dashboard_service = SupervisorDashboardService(workspace_registry, project_state_service, coding_workflow_service, coding_job_service, coding_guidance_service, supervisor_workflow_service, plan_service, execution_trace_service, tool_registry)
 

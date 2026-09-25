@@ -49,7 +49,8 @@ class AutonomousContinuationService:
                 status = "completed"
             steps.append({"id": step.id, "title": step.title, "status": status, "dependencies": dependencies, "reference": step.reference, "retry_count": int(step.metadata.get("retry_count", 0))})
         ready = [item["id"] for item in steps if item["status"] == "ready"]
-        return {"plan_id": plan.id, "scope": scope, "goal": plan.goal, "workspace": plan.workspace, "plan_status": plan.status, "steps": steps, "ready": ready, "next": ready[0] if ready else None, "observed_at": datetime.now(UTC).isoformat()}
+        running = [item["id"] for item in steps if item["status"] == "running"]
+        return {"plan_id": plan.id, "scope": scope, "goal": plan.goal, "workspace": plan.workspace, "plan_status": plan.status, "steps": steps, "ready": ready, "next": running[0] if running else (ready[0] if ready else None), "observed_at": datetime.now(UTC).isoformat()}
 
     def continue_once(self, *, plan_id: str, scope: str, specifications: dict[str, StepExecutionSpec], bounds: ContinuationBounds | None = None, cancel_check: Any = None) -> dict[str, Any]:
         chosen = bounds or ContinuationBounds()
@@ -83,6 +84,44 @@ class AutonomousContinuationService:
 
     def cancel(self, plan_id: str, scope: str) -> ProjectPlan | None:
         return self._plans.cancel(plan_id, scope)
+
+    def continue_with_bridge(self, *, plan_id: str, scope: str, bridge: Any, authorizations: dict[str, Any], max_steps: int = 10) -> dict[str, Any]:
+        """Advance only tasks whose bridge specs are currently authorized."""
+        if max_steps < 1 or max_steps > 50:
+            raise ValueError("invalid max_steps")
+        attempted: list[str] = []; completed: list[str] = []; waiting: str | None = None
+        for _ in range(max_steps):
+            state = self.inspect(plan_id, scope)
+            if state["plan_status"] != "active": break
+            step_id = state["next"]
+            if step_id is None: break
+            plan = self._require(plan_id, scope)
+            step = next(item for item in plan.steps if item.id == step_id)
+            spec, execution = bridge.resolve(plan, step, authorizations)
+            if execution is None:
+                if spec.execution_status == "completed":
+                    reference = spec.worker_reference or "specialized workflow completed"
+                    if step.status == "pending":
+                        self._plans.transition(plan_id, step_id, "in_progress", scope, reference)
+                    self._plans.transition(plan_id, step_id, "completed", scope, reference)
+                    completed.append(step_id)
+                    continue
+                if spec.execution_status in {"failed", "cancelled"} and step.status == "pending":
+                    reference = spec.worker_reference or f"specialized workflow {spec.execution_status}"
+                    self._plans.transition(plan_id, step_id, "in_progress", scope, reference)
+                    self._plans.transition(plan_id, step_id, spec.execution_status, scope, reference)
+                elif spec.worker_reference and step.status == "pending":
+                    self._plans.transition(plan_id, step_id, "in_progress", scope, spec.worker_reference)
+                waiting = spec.execution_status
+                break
+            attempted.append(step_id)
+            try:
+                self._executor.execute_once(scope=scope, plan_id=plan_id, step_id=step_id, tool_name=execution.tool_name, authorization=execution.authorization, approval=execution.approval, arguments=execution.arguments, verification_policy=execution.verification_policy, session_id=execution.session_id, trace_metadata={"autonomous": True, "expected_evidence": spec.expected_evidence})
+                completed.append(step_id)
+            except PlanExecutionError:
+                break
+        final = self._plans.get(plan_id, scope)
+        return {"plan_id": plan_id, "attempted": attempted, "completed": completed, "waiting": waiting, "plan_status": final.status if final else "missing", "state": self.inspect(plan_id, scope)}
 
     def _require(self, plan_id: str, scope: str) -> ProjectPlan:
         plan = self._plans.get(plan_id, scope)
