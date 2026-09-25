@@ -9,11 +9,13 @@ def test_build_workspace_registry() -> None:
         _env_file=None,
         seo_crawler_workspace=r"D:\Test\SEO",
         knowledge_workspace=r"D:\Test\Knowledge",
+        acceptance_test_workspace=r"D:\Test\Acceptance",
     )
 
     registry = build_workspace_registry(settings)
 
     assert registry.names() == [
+        "acceptance_test",
         "knowledge",
         "seo_crawler",
     ]
@@ -25,3 +27,7 @@ def test_build_workspace_registry() -> None:
     assert registry.get_root(
         "knowledge"
     ) == Path(r"D:\Test\Knowledge").resolve()
+
+    assert registry.get_root(
+        "acceptance_test"
+    ) == Path(r"D:\Test\Acceptance").resolve()

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5-coder:14b"
 
     seo_crawler_workspace: str = r"D:\Rexroad-SEO-Crawler"
+    acceptance_test_workspace: str = r"D:\Rexroad-AI-Test"
     knowledge_workspace: str = r"D:\Rexroad-AI-Knowledge"
 
     action_journal_path: str = "data/action_journal.sqlite3"
@@ -47,4 +48,3 @@ class Settings(BaseSettings):
     knowledge_max_extracted_bytes: int = Field(default=5_000_000, gt=0)
     knowledge_max_extracted_sections: int = Field(default=1000, gt=0)
     knowledge_max_document_chunks: int = Field(default=1000, gt=0)
-
