@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -124,6 +125,54 @@ class AutonomousContinuationService:
                 break
         final = self._plans.get(plan_id, scope)
         return {"plan_id": plan_id, "attempted": attempted, "completed": completed, "waiting": waiting, "plan_status": final.status if final else "missing", "state": self.inspect(plan_id, scope)}
+
+    def continue_parallel(self, *, plan_id: str, scope: str, bridge: Any, authorizations: dict[str, Any], max_steps: int = 10, max_concurrency: int = 2, cancel_check: Any = None) -> dict[str, Any]:
+        """Run a bounded batch of independent authorized read-only tasks."""
+        if max_steps < 1 or max_steps > 50 or max_concurrency < 1 or max_concurrency > 4:
+            raise ValueError("invalid parallel continuation bounds")
+        attempted: list[str] = []; completed: list[str] = []; failed: list[str] = []; batches: list[list[str]] = []; results: list[dict[str, Any]] = []
+        for _ in range(max_steps):
+            if cancel_check is not None and cancel_check():
+                break
+            state = self.inspect(plan_id, scope)
+            if state["plan_status"] != "active" or not state["ready"]:
+                break
+            plan = self._require(plan_id, scope)
+            candidates = []
+            for step_id in state["ready"]:
+                step = next(item for item in plan.steps if item.id == step_id)
+                spec, execution = bridge.resolve(plan, step, authorizations)
+                if execution is None or spec.mutation_required or spec.worker not in {"direct", "code_analyst"}:
+                    continue
+                if any(self._conflicts(spec, other[0]) for other in candidates):
+                    continue
+                candidates.append((spec, execution, step))
+                if len(candidates) >= max_concurrency:
+                    break
+            if not candidates:
+                break
+            batch_ids = [item[2].id for item in candidates]; batches.append(batch_ids); attempted.extend(batch_ids)
+            def run(item: tuple[Any, Any, Any], batch: list[str] = batch_ids) -> dict[str, Any]:
+                spec, execution, step = item
+                started = datetime.now(UTC)
+                try:
+                    result = self._executor.execute_once(scope=scope, plan_id=plan_id, step_id=step.id, tool_name=execution.tool_name, authorization=execution.authorization, approval=execution.approval, arguments=execution.arguments, verification_policy=execution.verification_policy, session_id=execution.session_id, trace_metadata={"autonomous": True, "parallel_batch": batch}, allow_parallel=True)
+                    return {"step_id": step.id, "worker": spec.worker, "status": "completed", "started_at": started.isoformat(), "ended_at": datetime.now(UTC).isoformat(), "trace_id": result.get("trace_id")}
+                except PlanExecutionError as exc:
+                    return {"step_id": step.id, "worker": spec.worker, "status": "failed", "started_at": started.isoformat(), "ended_at": datetime.now(UTC).isoformat(), "failure_reason": str(exc)[:500], "trace_id": exc.trace_id}
+
+            with ThreadPoolExecutor(max_workers=len(candidates), thread_name_prefix="rexroad-worker") as pool:
+                for future in as_completed([pool.submit(run, item) for item in candidates]):
+                    result = future.result(); results.append(result)
+                    (completed if result["status"] == "completed" else failed).append(result["step_id"])
+        final = self._plans.get(plan_id, scope)
+        return {"plan_id": plan_id, "attempted": attempted, "completed": completed, "failed": failed, "batches": batches, "results": results, "plan_status": final.status if final else "missing", "state": self.inspect(plan_id, scope)}
+
+    @staticmethod
+    def _conflicts(left: Any, right: Any) -> bool:
+        if left.workspace != right.workspace or left.mutation_required or right.mutation_required:
+            return True
+        return left.tool_name == right.tool_name and left.tool_name not in {"workspace.repo_map", "git.status"}
 
     def _skip_redundant_coding_steps(self, plan_id: str, scope: str, completed_step_id: str, steps: list[Any]) -> None:
         completed = next((item for item in steps if item.id == completed_step_id), None)

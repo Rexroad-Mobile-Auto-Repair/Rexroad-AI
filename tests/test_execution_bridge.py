@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 
 from app.autonomy.bridge import PlannedTaskExecutionBridge
@@ -145,3 +147,25 @@ def test_planner_tool_categories_route_specialized_workers(tmp_path: Path) -> No
     spec, execution = bridge.resolve(plan, plan.steps[0], {})
     assert spec.execution_status == "waiting_for_worker_dispatch"
     assert execution is None
+
+
+def test_parallel_continuation_runs_independent_read_only_tasks_concurrently(tmp_path: Path) -> None:
+    _, tools, bridge, continuation = build(tmp_path)
+    plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="inspect", steps=[
+        PlanStepCreate(title="map one", metadata={"worker": "direct", "tool_category": "repo_map"}),
+        PlanStepCreate(title="map two", metadata={"worker": "direct", "tool_category": "repo_map"}),
+    ]))
+    auth = tools.authorize("workspace.repo_map", "s")
+    barrier = threading.Barrier(2)
+    original = continuation._executor.execute_once
+
+    def execute_once(**kwargs):
+        barrier.wait(timeout=2)
+        time.sleep(0.02)
+        return original(**kwargs)
+
+    continuation._executor.execute_once = execute_once
+    result = continuation.continue_parallel(plan_id=plan.id, scope="s", bridge=bridge, authorizations={"workspace.repo_map": auth}, max_steps=1, max_concurrency=2)
+    assert len(result["batches"]) == 1
+    assert len(result["batches"][0]) == 2
+    assert len(result["completed"]) == 2

@@ -37,6 +37,7 @@ class PlanExecutionCoordinator:
         verification_policy: VerificationPolicy | None = None,
         session_id: str | None = None,
         trace_metadata: dict[str, Any] | None = None,
+        allow_parallel: bool = False,
     ) -> dict[str, Any]:
         plan = self._plans.get(plan_id, scope)
         if plan is None:
@@ -46,7 +47,7 @@ class PlanExecutionCoordinator:
         step = next((item for item in plan.steps if item.id == step_id), None)
         if step is None:
             raise PlanExecutionError("step not found")
-        if step.status != "pending" or self._plans.next_step(plan_id, scope).id != step_id:
+        if step.status != "pending" or (not allow_parallel and self._plans.next_step(plan_id, scope).id != step_id):
             raise PlanExecutionError("step is not actionable")
         tool = self._tools.get(tool_name)
         if not self._tools.validate_authorization(authorization, tool_name, scope, session_id):
