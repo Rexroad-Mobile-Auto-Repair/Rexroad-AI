@@ -90,8 +90,8 @@ def test_completed_external_workflow_advances_plan_once(tmp_path: Path) -> None:
     coding = Coding()
     bridge = PlannedTaskExecutionBridge(plans, continuation, PlannedWorkerDispatcher(coding=coding))
     plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="code", steps=[
-        PlanStepCreate(title="code", metadata={"worker": "supervised_coding", "tool_category": "supervised_coding", "mutation_required": True}),
-        PlanStepCreate(title="verify", metadata={"worker": "direct", "tool_category": "repo_map", "depends_on_positions": [0]}),
+        PlanStepCreate(title="code", metadata={"worker": "supervised_coding", "tool_category": "supervised_coding", "objective": "Prepare the code change through the supervised coding workflow", "mutation_required": True}),
+        PlanStepCreate(title="execute code change", metadata={"worker": "supervised_coding", "tool_category": "supervised_coding", "objective": "Execute the code change through the supervised coding workflow"}),
     ]))
 
     first = continuation.continue_with_bridge(plan_id=plan.id, scope="s", bridge=bridge, authorizations={})
@@ -101,7 +101,8 @@ def test_completed_external_workflow_advances_plan_once(tmp_path: Path) -> None:
     coding.workflow.status = "completed"
     resumed = continuation.continue_with_bridge(plan_id=plan.id, scope="s", bridge=bridge, authorizations={})
     assert resumed["completed"] == [plan.steps[0].id]
-    assert resumed["state"]["next"] == plan.steps[1].id
+    assert resumed["plan_status"] == "completed"
+    assert resumed["state"]["steps"][1]["status"] == "cancelled"
     repeated = continuation.continue_with_bridge(plan_id=plan.id, scope="s", bridge=bridge, authorizations={})
     assert repeated["completed"] == []
 

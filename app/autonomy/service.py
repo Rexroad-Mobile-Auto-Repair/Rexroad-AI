@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -105,6 +106,7 @@ class AutonomousContinuationService:
                         self._plans.transition(plan_id, step_id, "in_progress", scope, reference)
                     self._plans.transition(plan_id, step_id, "completed", scope, reference)
                     completed.append(step_id)
+                    self._skip_redundant_coding_steps(plan_id, scope, step_id, plan.steps)
                     continue
                 if spec.execution_status in {"failed", "cancelled"} and step.status == "pending":
                     reference = spec.worker_reference or f"specialized workflow {spec.execution_status}"
@@ -122,6 +124,25 @@ class AutonomousContinuationService:
                 break
         final = self._plans.get(plan_id, scope)
         return {"plan_id": plan_id, "attempted": attempted, "completed": completed, "waiting": waiting, "plan_status": final.status if final else "missing", "state": self.inspect(plan_id, scope)}
+
+    def _skip_redundant_coding_steps(self, plan_id: str, scope: str, completed_step_id: str, steps: list[Any]) -> None:
+        completed = next((item for item in steps if item.id == completed_step_id), None)
+        if completed is None or completed.metadata.get("worker") != "supervised_coding":
+            return
+        completed_tokens = self._task_tokens(completed)
+        if len(completed_tokens) < 2:
+            return
+        for candidate in steps:
+            if candidate.id == completed_step_id or candidate.status != "pending" or candidate.metadata.get("worker") != "supervised_coding":
+                continue
+            overlap = len(completed_tokens & self._task_tokens(candidate))
+            if overlap >= 2:
+                self._plans.transition(plan_id, candidate.id, "skipped", scope, f"redundant with completed task {completed_step_id}")
+
+    @staticmethod
+    def _task_tokens(step: Any) -> set[str]:
+        text = f"{step.title} {step.metadata.get('objective', '')}".casefold()
+        return {token for token in re.findall(r"[a-z0-9]+", text) if len(token) > 3 and token not in {"task", "step", "through", "using", "workflow"}}
 
     def _require(self, plan_id: str, scope: str) -> ProjectPlan:
         plan = self._plans.get(plan_id, scope)
