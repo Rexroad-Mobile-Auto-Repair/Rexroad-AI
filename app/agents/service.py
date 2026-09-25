@@ -115,6 +115,8 @@ class AgentService:
         for spec in self._tools.specs():
             definition = self._tools.get(spec.name)
             command_allowed = definition.name == "workspace.run_command" and requests_command_execution(request.message)
+            if requests_command_execution(request.message) and definition.name in {"git.status", "git.branch", "git.log", "git.diff", "git.show"}:
+                continue
             if definition.permission == "read" or (definition.permission == "workspace_check" and (check_allowed or command_allowed)):
                 specs.append(spec)
         return specs

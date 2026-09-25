@@ -48,6 +48,9 @@ class CommandRunner:
     def run_command(self, workspace: str, command: str, args: list[str] | None = None,
                     cwd: str = ".", timeout_seconds: int = 60) -> dict[str, Any]:
         args = list(args or [])
+        if not args and command.casefold() in {"git status", "git diff", "git log", "git show", "python --version"}:
+            command, *normalized_args = command.split()
+            args = normalized_args
         if not command or len(command) > 200 or any(len(str(arg)) > 2000 for arg in args):
             return {"status": "rejected", "reason": "invalid command arguments"}
         risk = CommandPolicy.classify(command, args)

@@ -17,6 +17,13 @@ def test_safe_command_and_output(tmp_path):
     assert result["stdout"] or result["stderr"]
 
 
+def test_safe_compound_command_is_normalized(tmp_path):
+    command, _ = runner(tmp_path)
+    result = command.run_command("test", "git status")
+    assert result["status"] == "completed"
+    assert result["exit_code"] == 0
+
+
 def test_policy_rejects_shell_network_and_git_mutation():
     assert CommandPolicy.classify("cmd.exe", ["/c", "dir"]) == CommandRisk.DENIED
     assert CommandPolicy.classify("git", ["push"]) == CommandRisk.DENIED
