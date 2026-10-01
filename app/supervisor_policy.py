@@ -28,6 +28,8 @@ class SupervisorPolicy:
         kind = (request.task_kind or "").casefold()
         if text.startswith("verify completed work"):
             return SupervisorRecommendation(action="delegate", profile="verifier", category="verification", reason="The task requests an independent verification check.", prerequisites=["completed result"], scope=request.scope, workspace=request.workspace)
+        if text.startswith("inspect code"):
+            return SupervisorRecommendation(action="delegate", profile="code_analyst", category="code_analysis", reason="The task explicitly requests source-code inspection.", prerequisites=["explicit workspace"] if not request.workspace else [], scope=request.scope, workspace=request.workspace)
         if kind in {"research", "comparison"} or any(term in text for term in ("research", "compare sources", "find evidence", "investigate")):
             return SupervisorRecommendation(action="delegate", profile="researcher", category="research", reason="The task is primarily research or evidence gathering.", prerequisites=["explicit scope"] if not request.scope else [], scope=request.scope, workspace=request.workspace)
         if kind in {"code", "analysis"} or any(term in text for term in ("inspect code", "analyze dependency", "review implementation", "source code")):

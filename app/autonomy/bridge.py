@@ -38,10 +38,11 @@ class PlannedTaskExecutionBridge:
     WORKERS: ClassVar[frozenset[str]] = frozenset({"direct", "researcher", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst", "verifier", "supervised_coding", "mcp", "skill"})
     TOOL_CATEGORIES: ClassVar[frozenset[str]] = frozenset({"read", "repo_map", "navigation", "git_status", "filesystem_read", "write", "execute", "mcp", "skill", "supervised_coding", "research"})
 
-    def __init__(self, plans: PlanService, continuation: AutonomousContinuationService, dispatcher: Any | None = None) -> None:
+    def __init__(self, plans: PlanService, continuation: AutonomousContinuationService, dispatcher: Any | None = None, analysis_tool: str | None = None) -> None:
         self._plans = plans
         self._continuation = continuation
         self._dispatcher = dispatcher
+        self._analysis_tool = analysis_tool
 
     def build_spec(self, plan: ProjectPlan, step: PlanStep) -> TaskExecutionSpec:
         metadata = step.metadata
@@ -52,6 +53,8 @@ class PlannedTaskExecutionBridge:
         if category not in self.TOOL_CATEGORIES:
             raise ValueError("unknown tool category")
         tool_name = self._tool_name(category, worker)
+        if self._analysis_tool and worker in {"code_analyst", "test_analyst", "architecture_analyst", "security_analyst"} and category in {"read", "repo_map", "navigation"}:
+            tool_name = self._analysis_tool
         mutation = bool(metadata.get("mutation_required", False))
         approval = "required" if mutation else "not_required"
         return TaskExecutionSpec(
@@ -76,7 +79,7 @@ class PlannedTaskExecutionBridge:
         if authorization is None:
             return spec.model_copy(update={"execution_status": "waiting_for_authorization"}), None
         arguments = self._arguments(spec)
-        return spec, StepExecutionSpec(tool_name=spec.tool_name, authorization=authorization, arguments=arguments, verification_policy=ResultPresentPolicy())
+        return spec, StepExecutionSpec(tool_name=spec.tool_name, authorization=authorization, arguments=arguments, verification_policy=ResultPresentPolicy(), session_id=authorization.session_id)
 
     def _tool_name(self, category: str, worker: str) -> str | None:
         if category in {"repo_map", "navigation"}: return "workspace.repo_map"
@@ -96,6 +99,8 @@ class PlannedTaskExecutionBridge:
 
     @staticmethod
     def _arguments(spec: TaskExecutionSpec) -> dict[str, Any]:
+        if spec.tool_name == "autonomy.analyze":
+            return {"plan_id": spec.plan_id, "step_id": spec.step_id, "scope": spec.scope, "workspace": spec.workspace}
         if spec.tool_name == "workspace.repo_map":
             return {"workspace": spec.workspace, "operation": "map"}
         if spec.tool_name == "git.status":

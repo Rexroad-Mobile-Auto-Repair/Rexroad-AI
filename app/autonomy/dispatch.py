@@ -10,9 +10,10 @@ from app.supervisor_workflows import ResearchVerifyWorkflowCreate, SupervisorRes
 class PlannedWorkerDispatcher:
     """Adapter from planned worker metadata to registered Rexroad workflows."""
 
-    def __init__(self, *, coding: CodingWorkflowService | None = None, research: SupervisorResearchVerifyWorkflow | None = None) -> None:
+    def __init__(self, *, coding: CodingWorkflowService | None = None, research: SupervisorResearchVerifyWorkflow | None = None, teams: Any | None = None) -> None:
         self._coding = coding
         self._research = research
+        self._teams = teams
 
     def dispatch(self, spec: TaskExecutionSpec) -> dict[str, Any]:
         if spec.worker == "supervised_coding":
@@ -21,7 +22,12 @@ class PlannedWorkerDispatcher:
             existing = next((item for item in self._coding.list(spec.scope, spec.workspace, 100) if item.parent_plan_id == spec.plan_id and item.parent_step_id == spec.step_id), None) if hasattr(self._coding, "list") else None
             if existing is not None:
                 return {"status": self._coding_status(existing.status), "workflow_id": existing.workflow_id, "workflow_status": existing.status}
-            workflow = self._coding.create(CodingWorkflowCreate(scope=spec.scope, workspace=spec.workspace or "", instruction=spec.objective, plan_id=spec.plan_id, step_id=spec.step_id))
+            instruction = spec.objective
+            findings = []
+            team = self._teams.get_for_plan(spec.plan_id, spec.scope) if self._teams else None
+            if team and team["status"] == "completed":
+                findings = team["metadata"].get("synthesis", {}).get("findings", [])
+            workflow = self._coding.create(CodingWorkflowCreate(scope=spec.scope, workspace=spec.workspace or "", instruction=instruction, team_evidence=findings[:4], plan_id=spec.plan_id, step_id=spec.step_id))
             return {"status": self._coding_status(workflow.status), "workflow_id": workflow.workflow_id, "workflow_status": workflow.status}
         if spec.worker in {"researcher", "verifier"}:
             if self._research is None:

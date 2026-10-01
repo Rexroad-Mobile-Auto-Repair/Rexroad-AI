@@ -129,16 +129,71 @@ class AutonomousContinuationService:
     def continue_with_team(self, *, plan_id: str, scope: str, bridge: Any, teams: Any, authorizations: dict[str, Any], max_steps: int = 1) -> dict[str, Any]:
         """Create or reuse one durable team, then hand off to normal continuation."""
         team = teams.get_for_plan(plan_id, scope)
+        if team is not None and team["status"] == "completed" and self.inspect(plan_id, scope)["ready"]:
+            team = None
         if team is None or team["status"] == "active":
             if team is None:
-                team = teams.create(plan_id, scope, bridge)
+                team = teams.create(plan_id, scope, bridge, authorizations=authorizations)
             if team is not None and team["status"] == "active":
                 result = teams.run(team["team_id"], scope, bridge, authorizations, max_steps=max_steps)
                 if result["execution"]["attempted"]:
                     return {"team": result["team"], "execution": result["execution"]}
         return {"team": team, "execution": self.continue_with_bridge(plan_id=plan_id, scope=scope, bridge=bridge, authorizations=authorizations, max_steps=max_steps)}
 
-    def continue_parallel(self, *, plan_id: str, scope: str, bridge: Any, authorizations: dict[str, Any], max_steps: int = 10, max_concurrency: int = 2, cancel_check: Any = None) -> dict[str, Any]:
+    def continue_routed(self, *, plan_id: str, scope: str, bridge: Any, teams: Any, authorizations: dict[str, Any], max_steps: int = 10) -> dict[str, Any]:
+        """Re-evaluate routing after each step or independent team batch."""
+        if max_steps < 1 or max_steps > 50:
+            raise ValueError("invalid max_steps")
+        attempted: list[str] = []
+        completed: list[str] = []
+        team = teams.get_for_plan(plan_id, scope)
+        waiting = None
+        for _ in range(max_steps):
+            before = self.inspect(plan_id, scope)
+            if before["plan_status"] != "active":
+                break
+            if self._has_concurrent_read_only_tasks(plan_id=plan_id, scope=scope, bridge=bridge, authorizations=authorizations):
+                routed = self.continue_with_team(plan_id=plan_id, scope=scope, bridge=bridge, teams=teams, authorizations=authorizations, max_steps=1)
+                team = routed["team"]
+                execution = routed["execution"]
+            else:
+                execution = self.continue_with_bridge(plan_id=plan_id, scope=scope, bridge=bridge, authorizations=authorizations, max_steps=1)
+            attempted.extend(execution.get("attempted", []))
+            completed.extend(execution.get("completed", []))
+            waiting = execution.get("waiting")
+            if not execution.get("completed"):
+                break
+        final = {"plan_id": plan_id, "attempted": attempted, "completed": completed, "waiting": waiting,
+                 "plan_status": self.inspect(plan_id, scope)["plan_status"], "state": self.inspect(plan_id, scope)}
+        return {"team": team, "execution": final} if team else final
+
+    def _has_concurrent_read_only_tasks(self, *, plan_id: str, scope: str, bridge: Any, authorizations: dict[str, Any]) -> bool:
+        state = self.inspect(plan_id, scope)
+        if state["plan_status"] != "active":
+            return False
+        plan = self._require(plan_id, scope)
+        candidates = []
+        for step_id in state["ready"]:
+            step = next(item for item in plan.steps if item.id == step_id)
+            # Probe side-effect free first: bridge.resolve() may dispatch workflows for
+            # mutation or researcher/verifier steps, which routing must never trigger.
+            try:
+                planned = bridge.build_spec(plan, step)
+            except ValueError:
+                continue
+            if planned.mutation_required or planned.worker not in {"direct", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst"}:
+                continue
+            spec, execution = bridge.resolve(plan, step, authorizations)
+            if execution is None or spec.mutation_required:
+                continue
+            if any(self._conflicts(spec, other) for other in candidates):
+                continue
+            candidates.append(spec)
+            if len(candidates) == 2:
+                return True
+        return False
+
+    def continue_parallel(self, *, plan_id: str, scope: str, bridge: Any, authorizations: dict[str, Any], max_steps: int = 10, max_concurrency: int = 2, cancel_check: Any = None, allowed_step_ids: set[str] | None = None) -> dict[str, Any]:
         """Run a bounded batch of independent authorized read-only tasks."""
         if max_steps < 1 or max_steps > 50 or max_concurrency < 1 or max_concurrency > 4:
             raise ValueError("invalid parallel continuation bounds")
@@ -152,6 +207,8 @@ class AutonomousContinuationService:
             plan = self._require(plan_id, scope)
             candidates = []
             for step_id in state["ready"]:
+                if allowed_step_ids is not None and step_id not in allowed_step_ids:
+                    continue
                 step = next(item for item in plan.steps if item.id == step_id)
                 spec, execution = bridge.resolve(plan, step, authorizations)
                 if execution is None or spec.mutation_required or spec.worker not in {"direct", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst"}:
@@ -169,7 +226,7 @@ class AutonomousContinuationService:
                 started = datetime.now(UTC)
                 try:
                     result = self._executor.execute_once(scope=scope, plan_id=plan_id, step_id=step.id, tool_name=execution.tool_name, authorization=execution.authorization, approval=execution.approval, arguments=execution.arguments, verification_policy=execution.verification_policy, session_id=execution.session_id, trace_metadata={"autonomous": True, "parallel_batch": batch}, allow_parallel=True)
-                    return {"step_id": step.id, "worker": spec.worker, "status": "completed", "started_at": started.isoformat(), "ended_at": datetime.now(UTC).isoformat(), "trace_id": result.get("trace_id")}
+                    return {"step_id": step.id, "worker": spec.worker, "status": "completed", "started_at": started.isoformat(), "ended_at": datetime.now(UTC).isoformat(), "trace_id": result.get("trace_id"), "worker_result": result.get("result") if execution.tool_name == "autonomy.analyze" else None}
                 except PlanExecutionError as exc:
                     return {"step_id": step.id, "worker": spec.worker, "status": "failed", "started_at": started.isoformat(), "ended_at": datetime.now(UTC).isoformat(), "failure_reason": str(exc)[:500], "trace_id": exc.trace_id}
 
@@ -178,13 +235,17 @@ class AutonomousContinuationService:
                     result = future.result(); results.append(result)
                     (completed if result["status"] == "completed" else failed).append(result["step_id"])
         final = self._plans.get(plan_id, scope)
+        positions = {step.id: step.position for step in final.steps} if final else {}
+        completed.sort(key=lambda step_id: positions.get(step_id, -1))
+        failed.sort(key=lambda step_id: positions.get(step_id, -1))
+        results.sort(key=lambda item: positions.get(item["step_id"], -1))
         return {"plan_id": plan_id, "attempted": attempted, "completed": completed, "failed": failed, "batches": batches, "results": results, "plan_status": final.status if final else "missing", "state": self.inspect(plan_id, scope)}
 
     @staticmethod
     def _conflicts(left: Any, right: Any) -> bool:
         if left.workspace != right.workspace or left.mutation_required or right.mutation_required:
             return True
-        return left.tool_name == right.tool_name and left.tool_name not in {"workspace.repo_map", "git.status"}
+        return left.tool_name == right.tool_name and left.tool_name not in {"workspace.repo_map", "git.status", "autonomy.analyze"}
 
     def _skip_redundant_coding_steps(self, plan_id: str, scope: str, completed_step_id: str, steps: list[Any]) -> None:
         completed = next((item for item in steps if item.id == completed_step_id), None)

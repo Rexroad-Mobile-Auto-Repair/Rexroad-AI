@@ -38,6 +38,7 @@ class CodingWorkflowCreate(BaseModel):
     parent_session_id: str | None = None
     plan_id: str | None = None
     step_id: str | None = None
+    team_evidence: list[str] = Field(default_factory=list, max_length=4)
 
 
 class CodingExecutionAttempt(BaseModel):
@@ -58,6 +59,7 @@ class CodingWorkflow(BaseModel):
     scope: str
     workspace: str
     instruction: str
+    team_evidence: list[str] = Field(default_factory=list, max_length=4)
     status: str
     analyst_task_id: str | None = None
     analyst_dispatch_id: str | None = None
@@ -95,7 +97,7 @@ class CodingWorkflowService:
         if not request.scope.strip(): raise ValueError("scope required")
         self.workspaces.get_root(request.workspace)
         now = datetime.now(UTC)
-        item = CodingWorkflow(workflow_id=str(uuid4()), scope=request.scope, workspace=request.workspace, instruction=request.instruction, status="awaiting_analysis", parent_session_id=request.parent_session_id, parent_plan_id=request.plan_id, parent_step_id=request.step_id, created_at=now, updated_at=now)
+        item = CodingWorkflow(workflow_id=str(uuid4()), scope=request.scope, workspace=request.workspace, instruction=request.instruction, team_evidence=[text[:4000] for text in request.team_evidence], status="awaiting_analysis", parent_session_id=request.parent_session_id, parent_plan_id=request.plan_id, parent_step_id=request.step_id, created_at=now, updated_at=now)
         self._save(item); return item
 
     def get(self, workflow_id: str, scope: str) -> CodingWorkflow | None:
@@ -116,7 +118,8 @@ class CodingWorkflowService:
     async def start_analysis(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_analysis": raise ValueError("analysis cannot start")
-        request = SupervisorDispatchRequest(worker_profile="code_analyst", scope=scope, workspace=item.workspace, instruction=f"Inspect code for coding objective: {item.instruction}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id)
+        evidence = "\nCompleted team evidence; verify against source:\n" + "\n".join(item.team_evidence) if item.team_evidence else ""
+        request = SupervisorDispatchRequest(worker_profile="code_analyst", scope=scope, workspace=item.workspace, instruction=(f"Inspect code for coding objective: {item.instruction}" + evidence)[:4000], parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id, **(self.agents.workflow_options("code_analyst") if getattr(self.agents, "provider_backed", False) else {}))
         auth = self.agents.authorize_dispatch(request); result = await self.agents.dispatch(request, auth)
         audit = self.agents.audits(scope, 100); dispatch_id = audit[0].dispatch_id if audit and audit[0].task_id == result.task_id else None
         item = item.model_copy(update={"analyst_task_id": result.task_id, "analyst_dispatch_id": dispatch_id, "status": "awaiting_analysis_review" if result.status == "completed" else "failed"})
@@ -220,7 +223,7 @@ class CodingWorkflowService:
     async def start_verification(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_verification": raise ValueError("verification is not available")
-        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=item.workspace, instruction=f"Verify completed work: {item.instruction[:1600]} Files changed: {', '.join(item.changed_files[:20])}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id)
+        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=item.workspace, instruction=f"Verify completed work: {item.instruction[:1600]} Files changed: {', '.join(item.changed_files[:20])}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id, **(self.agents.workflow_options("verifier") if getattr(self.agents, "provider_backed", False) else {}))
         auth = self.agents.authorize_dispatch(request); result = await self.agents.dispatch(request, auth)
         audits = self.agents.audits(scope, 100); dispatch_id = audits[0].dispatch_id if audits and audits[0].task_id == result.task_id else None
         updated = self._require(workflow_id, scope).model_copy(update={"verifier_task_id": result.task_id, "verifier_dispatch_id": dispatch_id, "verifier_review_status": "pending", "status": "awaiting_verifier_review" if result.status == "completed" else "failed"}); self._save(updated); return updated

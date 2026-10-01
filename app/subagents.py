@@ -17,9 +17,9 @@ from app.tools.registry import ToolRegistry
 from app.worker_routing import WorkerModelRouter
 
 PROFILES: dict[str, frozenset[str]] = {
-    "researcher": frozenset({"knowledge.search", "knowledge.search_across_workspaces"}),
-    "code_analyst": frozenset({"filesystem.read", "git.status", "git.log", "knowledge.search"}),
-    "verifier": frozenset({"git.status", "git.diff", "knowledge.search"}),
+    "researcher": frozenset({"filesystem.read", "workspace.repo_map", "knowledge.search", "knowledge.search_across_workspaces"}),
+    "code_analyst": frozenset({"filesystem.read", "workspace.repo_map", "git.status", "git.log", "knowledge.search"}),
+    "verifier": frozenset({"filesystem.read", "workspace.repo_map", "git.status", "git.diff", "knowledge.search"}),
 }
 
 
@@ -146,6 +146,17 @@ class SupervisorDispatchAudit(BaseModel):
 class SubAgentService:
     MAX_TOOL_CALLS = 3
 
+    @property
+    def provider_backed(self) -> bool:
+        return self._providers is not None and self._tools is not None and self._router is not None
+
+    def workflow_options(self, profile: str) -> dict:
+        if not self.provider_backed:
+            return {}
+        names = {tool.name for tool in self._tools.specs()}
+        return {"mode": "provider_loop", "max_tool_calls": 5,
+                "allowed_tools": sorted(PROFILES[profile] & names - {"knowledge.search_across_workspaces"})}
+
     def __init__(self, database_path: str | Path, providers: ProviderRegistry | None = None, tools: ToolRegistry | None = None, router: WorkerModelRouter | None = None) -> None:
         self._path, self._providers, self._tools, self._router = Path(database_path), providers, tools, router
         self._dispatch_auth: dict[str, DispatchAuthorization] = {}
@@ -199,16 +210,26 @@ class SubAgentService:
         with sqlite3.connect(self._path) as db:
             db.execute("INSERT INTO supervisor_dispatch_audits (dispatch_id, task_id, scope, workspace, recommendation_category, recommended_profile, authorized_profile, parent_session_id, plan_id, step_id, instruction_fingerprint, status, safe_reason, created_at, completed_at, tool_usage_json, mode, max_tool_calls) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', NULL, ?, NULL, '[]', ?, ?)", (dispatch_id, request.scope, request.workspace, recommendation.category, recommendation.profile, request.worker_profile, request.parent_session_id, request.plan_id, request.step_id, authorization.fingerprint, created.isoformat(), request.mode, request.max_tool_calls))
         task = self.create(SubAgentTaskCreate(**request.model_dump()))
-        route = self._router.resolve(request.worker_profile) if request.mode == "provider_loop" and self._router else None
-        if route:
-            with sqlite3.connect(self._path) as db:
-                db.execute("UPDATE supervisor_dispatch_audits SET provider=?, model=?, routing_reason=? WHERE dispatch_id=?", (route.provider, route.model, route.reason, dispatch_id))
-        result = (
-            await self.run_with_tools(task.task_id, dispatch_id, route.provider, route.model, request.max_tool_calls)
-            if request.mode == "provider_loop" and route
-            else await self.run(task.task_id)
-        )
+        task = task.model_copy(update={"status": "running", "started_at": datetime.now(UTC)})
         with sqlite3.connect(self._path) as db:
+            db.execute("UPDATE sub_agent_tasks SET payload_json=? WHERE task_id=?", (task.model_dump_json(), task.task_id))
+        try:
+            route = self._router.resolve(request.worker_profile) if request.mode == "provider_loop" and self._router else None
+            if route:
+                with sqlite3.connect(self._path) as db:
+                    db.execute("UPDATE supervisor_dispatch_audits SET provider=?, model=?, routing_reason=? WHERE dispatch_id=?", (route.provider, route.model, route.reason, dispatch_id))
+            result = (
+                await self.run_with_tools(task.task_id, dispatch_id, route.provider, route.model, request.max_tool_calls)
+                if request.mode == "provider_loop" and route
+                else await self.run(task.task_id)
+            )
+        except Exception:  # noqa: BLE001 - failed providers must persist a terminal worker result
+            result = SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="provider_error", started_at=task.started_at, completed_at=datetime.now(UTC))
+        with sqlite3.connect(self._path) as db:
+            finished = task.model_copy(update={"status": result.status, "completed_at": result.completed_at})
+            db.execute("UPDATE sub_agent_tasks SET payload_json=? WHERE task_id=?", (finished.model_dump_json(), task.task_id))
+            db.execute("UPDATE sub_agent_tasks SET result_json=? WHERE task_id=?", (result.model_dump_json(), task.task_id))
+            db.execute("INSERT OR IGNORE INTO sub_agent_reviews VALUES (?, ?, 'pending', NULL, NULL, ?)", (task.task_id, task.scope, result.completed_at.isoformat()))
             db.execute("UPDATE supervisor_dispatch_audits SET task_id=?, status=?, safe_reason=?, completed_at=? WHERE dispatch_id=?", (task.task_id, result.status, result.safe_reason, result.completed_at.isoformat(), dispatch_id))
         return result
 
@@ -222,11 +243,13 @@ class SubAgentService:
     def audit(self, dispatch_id: str, scope: str) -> SupervisorDispatchAudit | None:
         return next((item for item in self.audits(scope, 100) if item.dispatch_id == dispatch_id), None)
 
-    def record_tool_usage(self, dispatch_id: str, scope: str, tool_name: str, permission: str, status: str, result: object = None) -> None:
+    def record_tool_usage(self, dispatch_id: str, scope: str, tool_name: str, permission: str, status: str, result: object = None, arguments: dict | None = None) -> None:
         audit = self.audit(dispatch_id, scope)
         if audit is None or len(audit.tool_usage) >= 10:
             raise ValueError("audit unavailable")
         event = {"sequence": len(audit.tool_usage) + 1, "tool": tool_name, "permission": permission, "status": status, "result": str(sanitize_output(result))[:500]}
+        if arguments:
+            event["arguments"] = {key: str(arguments[key])[:500] for key in ("workspace", "relative_path", "operation") if key in arguments}
         usage = [*audit.tool_usage, event]
         with sqlite3.connect(self._path) as db:
             db.execute("UPDATE supervisor_dispatch_audits SET tool_usage_json=? WHERE dispatch_id=? AND scope=?", (json.dumps(usage, sort_keys=True), dispatch_id, scope))
@@ -274,10 +297,10 @@ class SubAgentService:
         allowed = [self._tools.get(name) for name in task.allowed_tools]
         allowed = [tool for tool in allowed if tool.permission == "read" and not tool.high_impact]
         specs = [tool for tool in self._tools.specs() if any(tool.name == item.name for item in allowed)]
-        messages = [ModelMessage(role="user", content=f"Worker profile: {task.worker_profile}\nScope: {task.scope}\n{task.instruction[:4000]}")]
+        messages = [ModelMessage(role="user", content=f"Worker profile: {task.worker_profile}\nScope: {task.scope}\nWorkspace: {task.workspace}\nUse the available read tools to inspect source before reporting facts. Stay in this workspace. Do not change files.\n{task.instruction[:4000]}")]
         calls = 0
         started = datetime.now(UTC)
-        while calls < max_calls:
+        while calls <= max_calls:
             response = await provider.generate(ModelRequest(model=model, messages=messages, tools=specs))
             if not response.tool_calls:
                 result = SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="completed", summary=str(sanitize_output(response.content))[:4000], tool_usage=[item["tool"] for item in self.audit(dispatch_id, task.scope).tool_usage] if self.audit(dispatch_id, task.scope) else [], started_at=started, completed_at=datetime.now(UTC))
@@ -286,7 +309,7 @@ class SubAgentService:
                 return result
             for call in response.tool_calls:
                 calls += 1
-                if calls > max_calls or call.name not in {item.name for item in allowed}:
+                if calls > max_calls or call.name not in {item.name for item in allowed} or ("workspace" in call.arguments and call.arguments["workspace"] != task.workspace) or ("scope" in call.arguments and call.arguments["scope"] != task.scope):
                     self.record_tool_usage(dispatch_id, task.scope, call.name, "read", "denied")
                     return SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="tool_denied_or_limit", started_at=started, completed_at=datetime.now(UTC))
                 tool = self._tools.get(call.name)
@@ -297,7 +320,7 @@ class SubAgentService:
                 try:
                     result_value = self._tools.execute(call.name, **call.arguments)
                     safe = sanitize_output(result_value)
-                    self.record_tool_usage(dispatch_id, task.scope, call.name, tool.permission, "success", safe)
+                    self.record_tool_usage(dispatch_id, task.scope, call.name, tool.permission, "success", safe, call.arguments)
                 except Exception:  # noqa: BLE001 - tool boundary returns safe failure
                     self.record_tool_usage(dispatch_id, task.scope, call.name, tool.permission, "error")
                     return SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="tool_error", started_at=started, completed_at=datetime.now(UTC))
@@ -308,7 +331,7 @@ class SubAgentService:
         record = self.get(task_id)
         if record is None or record[0].scope != scope or record[1] is None:
             raise ValueError("review not found")
-        if status not in {"accepted", "rejected"} or reviewer_session_id == record[0].parent_session_id:
+        if status not in {"accepted", "rejected"} or (reviewer_session_id is not None and reviewer_session_id == record[0].parent_session_id):
             raise ValueError("invalid review")
         with sqlite3.connect(self._path) as db:
             row = db.execute("SELECT status, reviewer_session_id, note, reviewed_at FROM sub_agent_reviews WHERE task_id=? AND scope=?", (task_id, scope)).fetchone()

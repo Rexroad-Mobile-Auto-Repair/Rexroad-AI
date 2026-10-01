@@ -52,3 +52,64 @@ def test_continuation_creates_and_reuses_team(tmp_path: Path) -> None:
     second = continuation.continue_with_team(plan_id=plan.id, scope="s", bridge=bridge, teams=teams, authorizations={"workspace.repo_map": auth})
     assert second["team"]["team_id"] == team_id
     assert second["execution"]["plan_status"] == "completed"
+
+
+def test_routed_continuation_uses_team_only_for_two_authorized_read_only_tasks(tmp_path: Path) -> None:
+    _, tools, continuation, bridge, teams = build(tmp_path)
+    plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="inspect", steps=[
+        PlanStepCreate(title="one", metadata={"worker": "direct", "tool_category": "repo_map"}),
+        PlanStepCreate(title="two", metadata={"worker": "code_analyst", "tool_category": "repo_map"}),
+    ]))
+    auth = tools.authorize("workspace.repo_map", "s")
+    result = continuation.continue_routed(plan_id=plan.id, scope="s", bridge=bridge, teams=teams, authorizations={"workspace.repo_map": auth})
+    assert result["team"] is not None
+    assert result["execution"]["completed"] == [item.id for item in plan.steps]
+
+
+def test_routed_continuation_preserves_bridge_for_one_ready_task(tmp_path: Path) -> None:
+    _, tools, continuation, bridge, teams = build(tmp_path)
+    plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="inspect", steps=[
+        PlanStepCreate(title="one", metadata={"worker": "direct", "tool_category": "repo_map"}),
+    ]))
+    auth = tools.authorize("workspace.repo_map", "s")
+    result = continuation.continue_routed(plan_id=plan.id, scope="s", bridge=bridge, teams=teams, authorizations={"workspace.repo_map": auth})
+    assert "team" not in result
+    assert result["completed"] == [plan.steps[0].id]
+
+
+class RecordingDispatcher:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def dispatch(self, spec):
+        self.calls.append(spec.step_id)
+        return {"status": "waiting_for_approval"}
+
+
+def test_routing_probe_never_dispatches_workflows(tmp_path: Path) -> None:
+    plans, tools, continuation, _, teams = build(tmp_path)
+    dispatcher = RecordingDispatcher()
+    bridge = PlannedTaskExecutionBridge(plans, continuation, dispatcher)
+    plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="inspect", steps=[
+        PlanStepCreate(title="one", metadata={"worker": "direct", "tool_category": "repo_map"}),
+        PlanStepCreate(title="edit", metadata={"worker": "supervised_coding", "mutation_required": True}),
+        PlanStepCreate(title="research", metadata={"worker": "researcher", "tool_category": "repo_map"}),
+    ]))
+    auth = tools.authorize("workspace.repo_map", "s")
+    result = continuation.continue_routed(plan_id=plan.id, scope="s", bridge=bridge, teams=teams, authorizations={"workspace.repo_map": auth}, max_steps=1)
+    assert "team" not in result
+    assert result["completed"] == [plan.steps[0].id]
+    assert dispatcher.calls == []
+    assert teams.get_for_plan(plan.id, "s") is None
+
+
+def test_routed_continuation_without_authorization_uses_bridge_and_creates_no_team(tmp_path: Path) -> None:
+    _, _, continuation, bridge, teams = build(tmp_path)
+    plan = continuation.create_goal(PlanCreate(scope="s", workspace="repo", goal="inspect", steps=[
+        PlanStepCreate(title="one", metadata={"worker": "direct", "tool_category": "repo_map"}),
+        PlanStepCreate(title="two", metadata={"worker": "code_analyst", "tool_category": "repo_map"}),
+    ]))
+    result = continuation.continue_routed(plan_id=plan.id, scope="s", bridge=bridge, teams=teams, authorizations={})
+    assert "team" not in result
+    assert result["attempted"] == [] and result["waiting"] == "waiting_for_authorization"
+    assert teams.get_for_plan(plan.id, "s") is None

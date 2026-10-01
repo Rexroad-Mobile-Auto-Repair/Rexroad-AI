@@ -115,7 +115,7 @@ class SupervisorResearchVerifyWorkflow:
             return self.result(workflow)
         if workflow.status != "awaiting_research":
             raise ValueError("research unavailable")
-        request = SupervisorDispatchRequest(worker_profile="researcher", scope=scope, workspace=workflow.workspace, instruction=f"Research: {workflow.instruction}", parent_session_id=workflow.parent_session_id, plan_id=workflow.plan_id, step_id=workflow.step_id)
+        request = SupervisorDispatchRequest(worker_profile="researcher", scope=scope, workspace=workflow.workspace, instruction=f"Research: {workflow.instruction}", parent_session_id=workflow.parent_session_id, plan_id=workflow.plan_id, step_id=workflow.step_id, **(self._agents.workflow_options("researcher") if getattr(self._agents, "provider_backed", False) else {}))
         authorization = self._agents.authorize_dispatch(request)
         try:
             result = await self._agents.dispatch(request, authorization)
@@ -142,7 +142,7 @@ class SupervisorResearchVerifyWorkflow:
         if workflow.status != "awaiting_review":
             raise ValueError("verification unavailable")
         contribution = self._agents.contribution(workflow.researcher_task_id, scope)
-        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=workflow.workspace, instruction=f"Verify completed work independently. Original goal: {workflow.instruction[:1800]}\nAccepted analysis: {contribution.summary[:2000]}", parent_session_id=workflow.parent_session_id, plan_id=workflow.plan_id, step_id=workflow.step_id)
+        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=workflow.workspace, instruction=f"Verify completed work independently. Original goal: {workflow.instruction[:1800]}\nAccepted analysis: {contribution.summary[:2000]}", parent_session_id=workflow.parent_session_id, plan_id=workflow.plan_id, step_id=workflow.step_id, **(self._agents.workflow_options("verifier") if getattr(self._agents, "provider_backed", False) else {}))
         authorization = self._agents.authorize_dispatch(request)
         try:
             result = await self._agents.dispatch(request, authorization)

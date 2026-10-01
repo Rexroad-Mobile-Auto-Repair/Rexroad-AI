@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.service import AgentLoopLimitError, AgentService, AgentSessionError
+from app.autonomy.analysis import PlannedAnalysis
 from app.autonomy.bridge import PlannedTaskExecutionBridge
 from app.autonomy.dispatch import PlannedWorkerDispatcher
 from app.autonomy.planner import GoalDecompositionService, GoalRequest
@@ -106,7 +108,7 @@ from app.tools.factory import build_tool_registry
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
 from app.tools.output_policy import sanitize_output
-from app.tools.registry import ToolApprovalRequest
+from app.tools.registry import ToolApprovalRequest, ToolDefinition
 from app.worker_routing import WorkerModelRouter
 
 app = FastAPI(
@@ -213,9 +215,11 @@ coding_action_service = SupervisorCodingActionService(coding_job_service, coding
 coding_guidance_service = CodingGuidanceService(coding_job_service)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 research_action_service = ResearchWorkflowActionService(supervisor_workflow_service)
-planned_worker_dispatcher = PlannedWorkerDispatcher(coding=coding_workflow_service, research=supervisor_workflow_service)
-planned_execution_bridge = PlannedTaskExecutionBridge(plan_service, autonomy_service, planned_worker_dispatcher)
 team_coordinator = AutonomousTeamCoordinator(settings.action_journal_path, plan_service, autonomy_service)
+planned_analysis = PlannedAnalysis(plan_service, sub_agent_service)
+tool_registry.register(ToolDefinition(name="autonomy.analyze", description="Internal scoped planned analysis", permission="read", handler=planned_analysis.run, internal=True))
+planned_worker_dispatcher = PlannedWorkerDispatcher(coding=coding_workflow_service, research=supervisor_workflow_service, teams=team_coordinator)
+planned_execution_bridge = PlannedTaskExecutionBridge(plan_service, autonomy_service, planned_worker_dispatcher, analysis_tool="autonomy.analyze")
 supervisor_policy = SupervisorPolicy()
 supervisor_dashboard_service = SupervisorDashboardService(workspace_registry, project_state_service, coding_workflow_service, coding_job_service, coding_guidance_service, supervisor_workflow_service, plan_service, execution_trace_service, tool_registry)
 
@@ -728,9 +732,22 @@ async def start_verification_workflow(workflow_id: str, scope: str) -> ResearchV
         raise HTTPException(status_code=404, detail="Verification workflow unavailable") from exc
 
 
+def _continue_plan(plan_id: str, scope: str) -> dict:
+    plan = plan_service.get(plan_id, scope)
+    if plan is None:
+        raise ValueError("plan not found")
+    if plan.workspace:
+        workspace_registry.get_root(plan.workspace)
+    names = ("workspace.repo_map", "git.status", "filesystem.read", "autonomy.analyze")
+    authorizations = {name: tool_registry.authorize(name, scope, "autonomy:" + plan_id) for name in names
+                      if tool_registry.get(name).permission == "read" and not tool_registry.get(name).high_impact}
+    return autonomy_service.continue_routed(plan_id=plan_id, scope=scope, bridge=planned_execution_bridge,
+                                           teams=team_coordinator, authorizations=authorizations, max_steps=10)
+
+
 async def _resume_research_plan(result: ResearchWorkflowActionResult) -> None:
     if result.plan_id:
-        autonomy_service.continue_with_bridge(plan_id=result.plan_id, scope=result.scope, bridge=planned_execution_bridge, authorizations={}, max_steps=10)
+        await asyncio.to_thread(_continue_plan, result.plan_id, result.scope)
 
 
 @app.post("/supervisor-research-workflows/{workflow_id}/action", response_model=ResearchWorkflowActionResult)
@@ -1058,6 +1075,11 @@ async def cancel_coding_workflow(workflow_id: str, scope: str, reason: str | Non
         raise HTTPException(status_code=404, detail="Coding workflow not found") from exc
 
 
+def _coding_proposal_for_workflow(workflow_id: str, scope: str) -> CodingProposal | None:
+    job = coding_job_service.get(workflow_id, scope)
+    return coding_proposal_service.get(job.proposal_id, scope) if job and job.proposal_id else None
+
+
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal", response_model=CodingProposal)
 async def create_coding_proposal(workflow_id: str, scope: str, request: ProposalCreate) -> CodingProposal:
     try:
@@ -1068,7 +1090,7 @@ async def create_coding_proposal(workflow_id: str, scope: str, request: Proposal
 
 @app.get("/supervisor-coding-workflows/{workflow_id}/proposal", response_model=CodingProposal)
 async def get_coding_proposal(workflow_id: str, scope: str) -> CodingProposal:
-    item = coding_proposal_service.get(workflow_id, scope)
+    item = _coding_proposal_for_workflow(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     return item
 
@@ -1103,7 +1125,7 @@ async def _resume_coding_workflow(workflow_id: str, scope: str) -> None:
             return
         if not workflow.parent_plan_id:
             return
-        autonomy_service.continue_with_bridge(plan_id=workflow.parent_plan_id, scope=scope, bridge=planned_execution_bridge, authorizations={}, max_steps=10)
+        await asyncio.to_thread(_continue_plan, workflow.parent_plan_id, scope)
         job = coding_job_service.get(workflow_id, scope)
         if job is None or job.next_action.action not in {"execute_patches", "execute_checks", "start_verifier"} or not job.next_action.allowed:
             return
@@ -1111,7 +1133,7 @@ async def _resume_coding_workflow(workflow_id: str, scope: str) -> None:
 
 @app.get("/supervisor-coding-workflows/{workflow_id}/proposal/preview")
 async def preview_coding_proposal(workflow_id: str, scope: str) -> dict:
-    item = coding_proposal_service.get(workflow_id, scope)
+    item = _coding_proposal_for_workflow(workflow_id, scope)
     if item is None:
         raise HTTPException(status_code=404, detail="Coding proposal not found")
     try: return coding_proposal_service.preview(item.proposal_id, scope)
@@ -1144,7 +1166,7 @@ async def materialize_revision_candidate(workflow_id: str, scope: str) -> Coding
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal/accept", response_model=CodingProposal)
 async def accept_coding_proposal(workflow_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
-    item = coding_proposal_service.get(workflow_id, scope)
+    item = _coding_proposal_for_workflow(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     try: return coding_proposal_service.review(item.proposal_id, scope, "accepted", reviewer_session_id)
     except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal review unavailable") from exc
@@ -1152,7 +1174,7 @@ async def accept_coding_proposal(workflow_id: str, scope: str, reviewer_session_
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal/reject", response_model=CodingProposal)
 async def reject_coding_proposal(workflow_id: str, scope: str, reviewer_session_id: str | None = None, note: str | None = None) -> CodingProposal:
-    item = coding_proposal_service.get(workflow_id, scope)
+    item = _coding_proposal_for_workflow(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     try: return coding_proposal_service.review(item.proposal_id, scope, "rejected", reviewer_session_id, note)
     except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal review unavailable") from exc
@@ -1160,7 +1182,7 @@ async def reject_coding_proposal(workflow_id: str, scope: str, reviewer_session_
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal/convert", response_model=CodingProposal)
 async def convert_coding_proposal(workflow_id: str, scope: str, workspace: str) -> CodingProposal:
-    item = coding_proposal_service.get(workflow_id, scope)
+    item = _coding_proposal_for_workflow(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     try: return coding_proposal_service.convert(item.proposal_id, scope, workspace)
     except ValueError as exc: raise HTTPException(status_code=409, detail="Proposal conversion unavailable") from exc
@@ -1168,7 +1190,7 @@ async def convert_coding_proposal(workflow_id: str, scope: str, workspace: str) 
 
 @app.get("/supervisor-coding-workflows/{workflow_id}/proposal/spec-review")
 async def get_coding_spec_review(workflow_id: str, scope: str) -> dict:
-    item = coding_proposal_service.get(workflow_id, scope)
+    item = _coding_proposal_for_workflow(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     try: return coding_proposal_service.spec_review(item.proposal_id, scope)
     except ValueError as exc: raise HTTPException(status_code=409, detail="Spec review unavailable") from exc
@@ -1176,7 +1198,7 @@ async def get_coding_spec_review(workflow_id: str, scope: str) -> dict:
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal/spec-review/accept", response_model=CodingProposal)
 async def accept_coding_spec_review(workflow_id: str, scope: str, workspace: str, reviewer_session_id: str | None = None) -> CodingProposal:
-    item = coding_proposal_service.get(workflow_id, scope)
+    item = _coding_proposal_for_workflow(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     try: return coding_proposal_service.accept_specs(item.proposal_id, scope, workspace, reviewer_session_id)
     except ValueError as exc: raise HTTPException(status_code=409, detail="Spec review unavailable") from exc
@@ -1184,7 +1206,7 @@ async def accept_coding_spec_review(workflow_id: str, scope: str, workspace: str
 
 @app.post("/supervisor-coding-workflows/{workflow_id}/proposal/spec-review/reject", response_model=CodingProposal)
 async def reject_coding_spec_review(workflow_id: str, scope: str, reviewer_session_id: str | None = None) -> CodingProposal:
-    item = coding_proposal_service.get(workflow_id, scope)
+    item = _coding_proposal_for_workflow(workflow_id, scope)
     if item is None: raise HTTPException(status_code=404, detail="Proposal not found")
     try: return coding_proposal_service.reject_specs(item.proposal_id, scope, reviewer_session_id)
     except ValueError as exc: raise HTTPException(status_code=409, detail="Spec review unavailable") from exc

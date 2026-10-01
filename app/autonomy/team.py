@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.autonomy.synthesis import WorkerResultContract, synthesize
 from app.plans.service import PlanService
 
 
@@ -22,7 +23,7 @@ class AutonomousTeamCoordinator:
         with sqlite3.connect(self._path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS autonomous_teams (team_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, scope TEXT NOT NULL, workspace TEXT, status TEXT NOT NULL, members_json TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)")
 
-    def create(self, plan_id: str, scope: str, bridge: Any, max_members: int = 2) -> dict[str, Any] | None:
+    def create(self, plan_id: str, scope: str, bridge: Any, max_members: int = 2, authorizations: dict[str, Any] | None = None) -> dict[str, Any] | None:
         if max_members < 1 or max_members > self.MAX_MEMBERS:
             raise ValueError("invalid team size")
         plan = self._plans.get(plan_id, scope)
@@ -32,12 +33,24 @@ class AutonomousTeamCoordinator:
         if len(ready) < 2:
             return None
         members = []
-        for step_id in ready[:max_members]:
+        selected = []
+        for step_id in ready:
             step = next(item for item in plan.steps if item.id == step_id)
             spec = bridge.build_spec(plan, step)
             if spec.mutation_required or spec.worker not in {"direct", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst", "researcher", "verifier"}:
                 continue
+            if authorizations is not None:
+                if spec.worker in {"researcher", "verifier"}:
+                    continue
+                _planned, execution = bridge.resolve(plan, step, authorizations)
+                if execution is None:
+                    continue
+            if any(self._continuation._conflicts(spec, other) for other in selected):
+                continue
+            selected.append(spec)
             members.append({"member_id": str(uuid4()), "worker": spec.worker, "task_ids": [step_id], "status": "assigned", "result_refs": []})
+            if len(members) == max_members:
+                break
         if len(members) < 2:
             return None
         now = datetime.now(UTC).isoformat()
@@ -62,7 +75,7 @@ class AutonomousTeamCoordinator:
         team = self.get(team_id, scope)
         if team is None:
             raise ValueError("team not found")
-        result = self._continuation.continue_parallel(plan_id=team["plan_id"], scope=scope, bridge=bridge, authorizations=authorizations, max_steps=max_steps, max_concurrency=len(team["members"]))
+        result = self._continuation.continue_parallel(plan_id=team["plan_id"], scope=scope, bridge=bridge, authorizations=authorizations, max_steps=max_steps, max_concurrency=len(team["members"]), allowed_step_ids={task_id for member in team["members"] for task_id in member["task_ids"]})
         members = team["members"]
         by_task = {task_id: item for item in members for task_id in item["task_ids"]}
         for item in result["results"]:
@@ -71,7 +84,19 @@ class AutonomousTeamCoordinator:
                 member["status"] = item["status"]
                 member["result_refs"] = [item.get("trace_id")] if item.get("trace_id") else []
         status = "completed" if all(item["status"] == "completed" for item in members) else "active"
+        if any(item["status"] == "failed" for item in members):
+            status = "failed"
+        metadata = team["metadata"]
+        contracts = {item["task_id"]: item for item in metadata.get("worker_results", [])}
+        for item in result["results"]:
+            if item.get("worker_result"):
+                contract = WorkerResultContract.model_validate(item["worker_result"])
+            else:
+                contract = WorkerResultContract(worker_type=item["worker"], task_id=item["step_id"], status=item["status"], summary=item.get("failure_reason", "Read-only plan execution completed."), evidence_refs=[item["trace_id"]] if item.get("trace_id") else [])
+            contracts[contract.task_id] = contract.model_dump()
+        metadata["worker_results"] = list(contracts.values())
+        metadata["synthesis"] = synthesize([WorkerResultContract.model_validate(item) for item in contracts.values()]).model_dump()
         completed_at = datetime.now(UTC).isoformat() if status == "completed" else None
         with sqlite3.connect(self._path) as db:
-            db.execute("UPDATE autonomous_teams SET status=?, members_json=?, completed_at=? WHERE team_id=? AND scope=?", (status, json.dumps(members), completed_at, team_id, scope))
+            db.execute("UPDATE autonomous_teams SET status=?, members_json=?, metadata_json=?, completed_at=? WHERE team_id=? AND scope=?", (status, json.dumps(members), json.dumps(metadata), completed_at, team_id, scope))
         return {"team": self.get(team_id, scope), "execution": result}

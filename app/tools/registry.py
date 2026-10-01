@@ -50,6 +50,7 @@ class ToolDefinition:
     handler: Callable[..., Any]
     parameters: dict[str, Any] = field(default_factory=dict)
     high_impact: bool = False
+    internal: bool = False
 
 
 class ToolNotRegisteredError(KeyError):
@@ -234,7 +235,7 @@ class ToolRegistry:
                 description=tool.description,
                 parameters=tool.parameters,
             )
-            for tool in self.definitions()
+            for tool in self.definitions() if not tool.internal
         ]
 
     def execute(
