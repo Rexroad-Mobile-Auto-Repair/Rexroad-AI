@@ -12,6 +12,7 @@ from app.tools.git import ReadOnlyGit
 from app.tools.memory import MemoryTools
 from app.tools.plans import PlanTools
 from app.tools.registry import ToolDefinition, ToolRegistry
+from app.tools.symbols import PythonSymbols
 
 
 def build_tool_registry(
@@ -27,6 +28,7 @@ def build_tool_registry(
 ) -> ToolRegistry:
     registry = ToolRegistry(database_path)
     search = WorkspaceCodeSearch(filesystem.workspaces)
+    registry.register(ToolDefinition(name="workspace.symbols", description="Find Python function/class definitions or possible syntax references to one identifier. Excludes comments and strings. Same-name matches are not resolved bindings; read source to confirm relationships. Read-only and bounded.", permission="read", handler=PythonSymbols(search).find, parameters={"type": "object", "properties": {"workspace": {"type": "string"}, "symbol": {"type": "string", "maxLength": 100}, "kind": {"type": "string", "enum": ["definitions", "references"]}, "pattern": {"type": "string", "maxLength": 200}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["workspace", "symbol"], "additionalProperties": False}))
     search_parameters = {"workspace": {"type": "string"}, "pattern": {"type": "string", "maxLength": 200, "default": "**/*"}, "relative_path": {"type": "string", "default": "."}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}
     registry.register(ToolDefinition(name="filesystem.glob", description="Find source and text files by filename or workspace-relative wildcard pattern, such as *.php or **/test_*.py. Read-only and bounded; excludes environments, generated files, links and private key artifacts.", permission="read", handler=search.glob, parameters={"type": "object", "properties": search_parameters, "required": ["workspace"], "additionalProperties": False}))
     registry.register(ToolDefinition(name="filesystem.grep", description="Search literal text and return matching source lines, line numbers and nearby context. Use query for text and pattern for filename filters. Results are bounded; read the file before editing or making full-source claims.", permission="read", handler=search.grep, parameters={"type": "object", "properties": {**search_parameters, "query": {"type": "string", "minLength": 1, "maxLength": 200}, "ignore_case": {"type": "boolean", "default": True}, "context": {"type": "integer", "minimum": 0, "maximum": 2}}, "required": ["workspace", "query"], "additionalProperties": False}))

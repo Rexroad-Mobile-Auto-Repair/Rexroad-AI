@@ -118,6 +118,7 @@ from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
 from app.tools.output_policy import sanitize_output
 from app.tools.registry import ToolApprovalRequest, ToolDefinition
+from app.tools.symbols import PythonSymbols
 from app.worker_routing import WorkerModelRouter
 
 app = FastAPI(
@@ -593,6 +594,16 @@ def search_workspace(workspace: str, query: str = Query(default="", max_length=2
 @app.get("/project-file.js")
 async def project_file_controls() -> FileResponse:
     return FileResponse(Path(__file__).parent / "static" / "project-file.js", media_type="text/javascript")
+
+
+@app.get("/workspaces/{workspace}/symbols")
+def workspace_symbols(workspace: str, symbol: str = Query(min_length=1, max_length=100), kind: str = Query(default="definitions"), pattern: str = Query(default="*.py", min_length=1, max_length=200), limit: int = Query(default=20, ge=1, le=50)) -> dict:
+    try:
+        return PythonSymbols(code_search).find(workspace, symbol, kind, pattern, limit)
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="The selected workspace is unavailable") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @app.get("/workspaces/{workspace}/source")

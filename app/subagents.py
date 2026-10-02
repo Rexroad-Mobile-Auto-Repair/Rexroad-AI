@@ -17,12 +17,12 @@ from app.tools.registry import ToolRegistry
 from app.worker_routing import WorkerModelRouter
 
 PROFILES: dict[str, frozenset[str]] = {
-    "researcher": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.repo_map", "knowledge.search", "knowledge.search_across_workspaces"}),
-    "code_analyst": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.repo_map", "git.status", "git.log", "knowledge.search"}),
-    "test_analyst": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.repo_map", "git.status", "git.diff"}),
-    "architecture_analyst": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.repo_map", "git.status", "git.log"}),
-    "security_analyst": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.repo_map", "git.status", "git.diff"}),
-    "verifier": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.repo_map", "git.status", "git.diff", "knowledge.search"}),
+    "researcher": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.symbols", "workspace.repo_map", "knowledge.search", "knowledge.search_across_workspaces"}),
+    "code_analyst": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.symbols", "workspace.repo_map", "git.status", "git.log", "knowledge.search"}),
+    "test_analyst": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.symbols", "workspace.repo_map", "git.status", "git.diff"}),
+    "architecture_analyst": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.symbols", "workspace.repo_map", "git.status", "git.log"}),
+    "security_analyst": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.symbols", "workspace.repo_map", "git.status", "git.diff"}),
+    "verifier": frozenset({"filesystem.read", "filesystem.glob", "filesystem.grep", "workspace.symbols", "workspace.repo_map", "git.status", "git.diff", "knowledge.search"}),
 }
 
 

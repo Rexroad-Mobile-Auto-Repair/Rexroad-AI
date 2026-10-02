@@ -191,3 +191,27 @@ navigated both directions, cleared the viewer on workspace change, and opened
 acceptance_test/example.py from Find files. The viewer controls fit a 390px
 viewport without horizontal page overflow. This extends Rexroad's donor-inspired
 search integration; the viewer itself is Rexroad code, with no new donor imports.
+
+### Python code navigation
+
+Find definitions and Find references use Python's AST parser through the new
+workspace.symbols read-only tool and GET /workspaces/{workspace}/symbols.
+Definitions cover named functions, async functions, methods, and classes.
+Possible references cover name loads, attribute loads, and import names/aliases;
+comments and plain string literals are excluded. Results link to the existing
+source viewer. These are name-based syntax candidates, not resolved bindings or
+confirmed callers. Only Python is supported in this milestone, with no language
+server installation. Invalid Python files are skipped and counted, and normal
+search traversal, read-byte, output, result, and workspace limits remain in place.
+
+Clawd-Code's tools/lsp.py interface was reviewed as a feature reference. Its
+implementation delegates requests to a separately configured LSP client; that
+runtime was not copied or installed. Rexroad's app/tools/symbols.py supplies this
+smaller navigation implementation using the standard library, and read-only
+analyst profiles can use it through the existing tool registry.
+
+Live normal-provider session 0ca8950c-d6ba-4d9d-a305-b66fe3cc960e successfully
+used workspace.symbols successfully for both definitions and references.
+It found greeting at example.py line 1 and five possible references in
+test_example.py. Browser acceptance found the same candidates and opened the
+Unicode-name test at line 13 in the read-only source viewer.

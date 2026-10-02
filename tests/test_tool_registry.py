@@ -139,6 +139,7 @@ def test_build_tool_registry_contains_expected_tools(
         "git.status",
             "workspace.run_check",
             "workspace.run_command",
+            "workspace.symbols",
         ]
 
     assert registry.get("filesystem.apply_patch").permission == "filesystem_write"
