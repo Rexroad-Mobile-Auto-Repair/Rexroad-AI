@@ -70,6 +70,52 @@ class WorkspaceCodeSearch:
     def __init__(self, workspaces: WorkspaceRegistry) -> None:
         self.workspaces = workspaces
 
+    def source(self, workspace: str, relative_path: str, line: int = 1) -> dict:
+        """Read a bounded source window using the same exclusions as search."""
+        root, _ = self._validate(workspace, ".", "**/*", 20)
+        requested = Path(relative_path)
+        if requested.is_absolute() or ".." in requested.parts:
+            raise WorkspaceAccessError("File must remain workspace-relative")
+        path = self.workspaces.resolve_path(workspace, relative_path)
+        name = path.name.casefold()
+        if (
+            any(self._ignored(part) for part in path.relative_to(root).parts)
+            or any(
+                (root.joinpath(*requested.parts[:i])).is_symlink()
+                for i in range(1, len(requested.parts) + 1)
+            )
+            or name.startswith(".env")
+            or any(word in name for word in ("credential", "secret", "private_key"))
+            or path.suffix.casefold() not in TEXT_SUFFIXES
+        ):
+            raise WorkspaceAccessError("File is excluded")
+        if type(line) is not int or line < 1:
+            raise ValueError("Choose a positive source line")
+        with path.open("rb") as source:
+            data = source.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES or b"\x00" in data:
+            raise ValueError("Only text files up to 256 KB can be viewed")
+        try:
+            lines = data.decode("utf-8").splitlines()
+        except UnicodeError:
+            raise ValueError("Only UTF-8 text files can be viewed") from None
+        if line > max(1, len(lines)):
+            raise ValueError("That line no longer exists; search the file again")
+        start = max(1, line - 40)
+        end = min(len(lines), start + 119)
+        return {
+            "workspace": workspace,
+            "file": path.relative_to(root).as_posix(),
+            "selected_line": line,
+            "total_lines": len(lines),
+            "start_line": start,
+            "end_line": end,
+            "lines": [
+                {"line": i + 1, "text": text}
+                for i, text in enumerate(lines[start - 1 : end], start - 1)
+            ],
+        }
+
     def _validate(self, workspace, relative_path, pattern, limit):
         if (
             not isinstance(pattern, str)

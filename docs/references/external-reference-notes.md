@@ -173,3 +173,21 @@ c810f541-c6a8-4fbe-bf12-20a92922a72e successfully journaled filesystem.glob,
 filesystem.grep, and filesystem.read in acceptance_test and cited greeting's
 declaration at example.py line 1. The visible operator search independently found
 _filter_form in seo_crawler at app/reports/html_view.py line 96.
+
+### Source viewer
+
+Search-result filenames and matching lines now open a read-only source viewer.
+GET /workspaces/{workspace}/source validates registered workspace paths and uses
+the search service's text-file and private/generated-file exclusions. It reads
+at most 256 KB and returns up to 120 numbered lines around the requested line.
+The panel highlights that line and offers Previous lines, Next lines, and Close
+file. Empty files are identified; a stale line reference requires a new search.
+Source text is rendered without interpreting HTML. Project changes abort pending
+reads and clear the viewer; another file selection replaces the previous request.
+No source file is modified and no approval is granted by viewing it.
+
+Live browser acceptance opened seo_crawler/app/reports/html_view.py at line 96,
+navigated both directions, cleared the viewer on workspace change, and opened
+acceptance_test/example.py from Find files. The viewer controls fit a 390px
+viewport without horizontal page overflow. This extends Rexroad's donor-inspired
+search integration; the viewer itself is Rexroad code, with no new donor imports.

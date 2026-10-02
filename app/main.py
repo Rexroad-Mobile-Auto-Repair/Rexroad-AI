@@ -315,7 +315,7 @@ async def list_skills(workspace: str | None = None) -> list[dict[str, object]]:
 async def operator_page() -> HTMLResponse:
     shell = OPERATOR_HTML.split("</main>", 1)[0]
     shell = shell.replace("</style>", "input,select,pre{max-width:100%;box-sizing:border-box}pre{overflow:auto;white-space:pre-wrap}button:disabled{opacity:.5;cursor:default}</style>")
-    return HTMLResponse(shell + '<script src="/operator-controls.js"></script><script src="/project-search.js"></script></main></body></html>')
+    return HTMLResponse(shell + '<script src="/operator-controls.js"></script><script src="/project-search.js"></script><script src="/project-file.js"></script></main></body></html>')
 
 
 @app.get("/chat", response_class=HTMLResponse)
@@ -586,6 +586,21 @@ def search_workspace(workspace: str, query: str = Query(default="", max_length=2
         return code_search.glob(workspace, pattern=pattern, limit=limit)
     except PermissionError:
         raise HTTPException(status_code=404, detail="The selected workspace or search folder is unavailable") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.get("/project-file.js")
+async def project_file_controls() -> FileResponse:
+    return FileResponse(Path(__file__).parent / "static" / "project-file.js", media_type="text/javascript")
+
+
+@app.get("/workspaces/{workspace}/source")
+def workspace_source(workspace: str, path: str = Query(min_length=1, max_length=1000), line: int = Query(default=1, ge=1, le=10_000_000)) -> dict:
+    try:
+        return code_search.source(workspace, path, line)
+    except (PermissionError, OSError):
+        raise HTTPException(status_code=404, detail="The selected source file is unavailable") from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
