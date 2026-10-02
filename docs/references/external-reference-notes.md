@@ -215,3 +215,62 @@ used workspace.symbols successfully for both definitions and references.
 It found greeting at example.py line 1 and five possible references in
 test_example.py. Browser acceptance found the same candidates and opened the
 Unicode-name test at line 13 in the read-only source viewer.
+
+## Remaining operator features milestone
+
+All seven planned feature areas now have initial implementations: file search
+with source viewing, Python syntax navigation, task shortcuts, saved worker progress,
+project memory controls, isolated workspaces, and external integration controls.
+Clawd's skill.py, tasks_v2.py, worktree.py, and mcp.py interfaces were reviewed;
+these additions reuse Rexroad's services instead of importing Clawd's runtime.
+
+Four bundled skills live under app/skills/builtin: review-code, review-tests,
+investigate-error, and review-security. The operator supplies a source file and
+optional context, then explicitly starts a read-only review. The normal agent
+service performs and journals the request with an allowlist of source-reading
+tools. These are audited conversations, not new coding workflows or multi-agent
+plans. JSON skill arguments support quoted paths and spaces without shell
+interpretation; existing name=value invocation remains supported. User/workspace
+skills retain precedence, but shortcuts reject overrides with broader tools.
+These reviews do not execute checks or grant approvals. A narrow wording guard
+warns when a report directly claims test results or test execution; it is not
+semantic verification of every statement. Read-only status is always displayed.
+
+Worker progress projects current coding-job, worker-result, and plan records:
+status, next action, blocking reason, worker IDs, proposal status, file execution,
+checks, and persisted step status. It refreshes while the page is visible without
+starting workers, approving anything, or replaying changes. Existing guidance
+remains the control for actual workflow actions.
+
+Project memory uses the existing proposal and memory stores. Its scope is
+project:{workspace}:{operator-scope}, isolating project facts across selections.
+Creating a proposal does not create an active memory. Approve/reject are separate
+clicks and use scoped review APIs. No memory is saved automatically from a review.
+This namespace is explicit; ordinary chat does not automatically inject every
+operator memory. Existing memory tools can read the named scope when requested.
+
+Managed workspaces create a codex/isolated-* Git branch and worktree from the
+previewed HEAD of a registered whole Git project. A changed HEAD requires another
+preview. Uncommitted files remain in the original project and are not copied.
+Workspace metadata persists in the existing SQLite database; verified worktrees
+are re-registered on startup. Only owned locations under data/worktrees are used,
+and creation does not push, merge, delete, or commit original files. Failed
+attempts remain recorded. Automatic merging and worktree removal are not included.
+
+External integration controls show configured-server status and capability risk,
+and connect/disconnect trusted servers from the existing MCP configuration.
+They cannot install arbitrary servers, edit commands/credentials, or expose
+high-risk tools. Disconnect removes capabilities from the adapter and registry;
+failed discovery closes its client and removes partial capabilities. Timeout
+responses fail safely. No external server is configured in the live project yet.
+Real stdio lifecycle and risk boundaries were tested through the operator HTTP
+routes using a local test server, not a mocked external-service acceptance claim.
+
+Live acceptance used the normal configured Qwen provider for all four shortcuts.
+Final test review session 6d3ef423-2fe2-48b4-b5f6-9cdee703a999 correctly reported
+existing contract coverage without a test-pass claim. The visible Review code
+button saved session 5f3c512b-23df-4dd8-8a45-fdd3d8bf71f9. Saved followup-reliability
+progress showed the completed analyst and verifier with persisted check results.
+The browser proposed and approved a test memory under feature-acceptance, and
+created isolated_9816f5dd1697 from acceptance_test commit 4faf8cf8415b. Original
+unsaved edits remained intact. That worktree and approved memory survived restart.

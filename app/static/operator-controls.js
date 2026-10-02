@@ -26,6 +26,7 @@ async function loadWorkspaces() {
     const workspaces = await api('/workspaces');
     $('workspace').innerHTML = workspaces.filter(x => x.available).map(x => `<option value="${safe(x.name)}">${safe(x.name)}</option>`).join('');
     await load();
+    document.dispatchEvent(new CustomEvent('operator-context-ready'));
   } catch (e) { $('error').textContent = e.message; }
 }
 let operatorBusy = false;

@@ -22,6 +22,15 @@ class WorkspaceRegistry:
     def names(self) -> list[str]:
         return sorted(self._workspaces)
 
+    def register_managed(self, name: str, root: Path) -> None:
+        """Called only by the managed-worktree service, never from arbitrary paths."""
+        root = root.resolve()
+        if name in self._workspaces and self._workspaces[name] != root:
+            raise WorkspaceAccessError("Workspace name is already registered")
+        if not name.startswith("isolated_") or not root.is_dir():
+            raise WorkspaceAccessError("Invalid managed workspace")
+        self._workspaces[name] = root
+
     def list(self) -> list[WorkspaceInfo]:
         return [self.inspect(name) for name in self.names()]
 

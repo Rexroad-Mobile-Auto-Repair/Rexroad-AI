@@ -109,7 +109,10 @@ class StdioMCPClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("MCP request timed out")
-            response = self._responses.get(timeout=remaining)
+            try:
+                response = self._responses.get(timeout=remaining)
+            except queue.Empty:
+                raise TimeoutError("MCP request timed out") from None
             if response.get("id") != request_id:
                 continue
             if isinstance(response.get("error"), dict):
@@ -215,6 +218,10 @@ class MCPAdapter:
             return self._status[name]
 
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._clients.pop(name, None)
+            client.close()
+            self._tools = {key: tool for key, tool in self._tools.items() if tool.server != name}
+            self._resources = {key: resource for key, resource in self._resources.items() if resource.server != name}
             self._status[name] = MCPServerStatus(name=name, configured=True, last_error=str(exc)[:300])
             return self._status[name]
 
@@ -230,10 +237,14 @@ class MCPAdapter:
         return [self.connect_configured(name) for name in self._configs]
 
     def disconnect(self, name: str) -> None:
+        if name not in self._configs:
+            raise ValueError("MCP server is not configured")
         client = self._clients.pop(name, None)
         if client:
             client.close()
         self._status[name] = MCPServerStatus(name=name, configured=True)
+        self._tools = {key: tool for key, tool in self._tools.items() if tool.server != name}
+        self._resources = {key: resource for key, resource in self._resources.items() if resource.server != name}
 
     def statuses(self) -> list[MCPServerStatus]:
         return list(self._status.values())
@@ -245,7 +256,7 @@ class MCPAdapter:
         """Register only connected read-only capabilities; native names win."""
         from app.tools.registry import ToolDefinition
         for definition in self._tools.values():
-            if definition.risk != "read_only" or definition.name in registry.names():
+            if definition.risk != "read_only" or not self._status[definition.server].connected or definition.name in registry.names():
                 continue
             def invoke(_definition=definition, **arguments):
                 return self.call(_definition.name, arguments).model_dump(mode="json")

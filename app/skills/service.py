@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -41,8 +42,9 @@ class SkillLoadError(BaseModel):
 
 
 class SkillService:
-    def __init__(self, user_root: Path | None = None) -> None:
+    def __init__(self, user_root: Path | None = None, builtin_root: Path | None = None) -> None:
         self.user_root = (user_root or (Path.home() / ".rexroad" / "skills")).resolve()
+        self.builtin_root = builtin_root
 
     @staticmethod
     def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -134,7 +136,10 @@ class SkillService:
         if workspace_root is not None:
             local, local_errors = self._load((workspace_root / ".rexroad" / "skills").resolve(), "workspace")
             errors.extend(local_errors)
-        merged = {skill.name: skill for skill in user}
+        builtin, builtin_errors = self._load(self.builtin_root, "builtin") if self.builtin_root else ([], [])
+        errors.extend(builtin_errors)
+        merged = {skill.name: skill for skill in builtin}
+        merged.update({skill.name: skill for skill in user})
         merged.update({skill.name: skill for skill in local})
         return sorted(merged.values(), key=lambda skill: skill.name), errors
 
@@ -161,7 +166,14 @@ class SkillService:
     def invocation(message: str) -> tuple[str, dict[str, str]] | None:
         if not message.startswith("/skill "):
             return None
-        parts = message[7:].strip().split()
+        raw = message[7:].strip()
+        head = raw.split(maxsplit=1)
+        if len(head) == 2 and head[1].startswith("{"):
+            args = json.loads(head[1])
+            if not isinstance(args, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in args.items()):
+                raise ValueError("skill arguments must be text values")
+            return head[0], args
+        parts = raw.split()
         if not parts:
             raise ValueError("skill name is required")
         args: dict[str, str] = {}

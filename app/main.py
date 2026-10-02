@@ -64,6 +64,9 @@ from app.openai_compat import (
     to_agent_request,
     validate_request,
 )
+from app.operator.integrations import IntegrationControls
+from app.operator.tasks import SHORTCUTS, project_progress, shortcut_request, shortcut_warnings
+from app.operator.worktrees import ManagedWorktrees
 from app.plans.bridge import TrustedExecutionBridge
 from app.plans.execution import PlanExecutionCoordinator, PlanExecutionError
 from app.plans.models import PlanCreate, PlanStep, ProjectPlan, StepStatus
@@ -168,7 +171,7 @@ settings = Settings()
 provider_registry = build_provider_registry(settings)
 
 workspace_registry = build_workspace_registry(settings)
-skill_service = SkillService()
+skill_service = SkillService(builtin_root=Path(__file__).parent / "skills" / "builtin")
 filesystem = ReadOnlyFilesystem(workspace_registry)
 git = ReadOnlyGit(workspace_registry)
 knowledge_service = KnowledgeService(
@@ -187,6 +190,7 @@ knowledge_service = KnowledgeService(
 )
 navigator = WorkspaceNavigator(workspace_registry, KnowledgeStore(settings.knowledge_index_path))
 code_search = WorkspaceCodeSearch(workspace_registry)
+managed_worktrees = ManagedWorktrees(workspace_registry, settings.action_journal_path, Path(settings.action_journal_path).parent / "worktrees")
 cross_workspace_service = CrossWorkspaceKnowledgeService(workspace_registry, knowledge_service)
 action_journal = ActionJournal(
     settings.action_journal_path
@@ -199,6 +203,7 @@ tool_registry = build_tool_registry(
     settings.action_journal_path, cross_workspace=cross_workspace_service, navigator=navigator,
 )
 mcp_adapter = MCPAdapter(load_mcp_server_configs(Path(settings.action_journal_path).parent / "mcp_servers.json"))
+integration_controls = IntegrationControls(mcp_adapter, tool_registry)
 execution_spec_service = ExecutionSpecService(settings.action_journal_path, plan_service, tool_registry)
 execution_bridge = TrustedExecutionBridge(execution_spec_service, tool_registry)
 plan_execution = PlanExecutionCoordinator(plan_service, tool_registry, action_journal, lambda workspace, scope, reason: project_history_service.capture_after_success(workspace, scope, reason))
@@ -316,7 +321,7 @@ async def list_skills(workspace: str | None = None) -> list[dict[str, object]]:
 async def operator_page() -> HTMLResponse:
     shell = OPERATOR_HTML.split("</main>", 1)[0]
     shell = shell.replace("</style>", "input,select,pre{max-width:100%;box-sizing:border-box}pre{overflow:auto;white-space:pre-wrap}button:disabled{opacity:.5;cursor:default}</style>")
-    return HTMLResponse(shell + '<script src="/operator-controls.js"></script><script src="/project-search.js"></script><script src="/project-file.js"></script></main></body></html>')
+    return HTMLResponse(shell + '<script src="/operator-controls.js"></script><script src="/project-search.js"></script><script src="/project-file.js"></script><script src="/operator-features.js"></script></main></body></html>')
 
 
 @app.get("/chat", response_class=HTMLResponse)
@@ -594,6 +599,98 @@ def search_workspace(workspace: str, query: str = Query(default="", max_length=2
 @app.get("/project-file.js")
 async def project_file_controls() -> FileResponse:
     return FileResponse(Path(__file__).parent / "static" / "project-file.js", media_type="text/javascript")
+
+
+@app.get("/operator-features.js")
+async def operator_features_controls() -> FileResponse:
+    return FileResponse(Path(__file__).parent / "static" / "operator-features.js", media_type="text/javascript")
+
+
+class ShortcutRequest(BaseModel):
+    workspace: str = Field(min_length=1, max_length=100)
+    target: str = Field(min_length=1, max_length=500)
+    note: str = Field(default="", max_length=1000)
+
+
+class ShortcutResult(BaseModel):
+    provider: str
+    model: str
+    session_id: str
+    content: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+@app.get("/operator/shortcuts")
+def task_shortcuts() -> list[dict]:
+    return [{"id": name, "title": title} for name, title in SHORTCUTS.items()]
+
+
+@app.get("/operator/integrations")
+def operator_integrations() -> list[dict]:
+    return integration_controls.catalog()
+
+
+class IntegrationAction(BaseModel):
+    action: str = Field(pattern="^(connect|disconnect)$")
+
+
+@app.post("/operator/integrations/{name}/action")
+def integration_action(name: str, request: IntegrationAction) -> dict:
+    try:
+        return integration_controls.action(name, request.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.get("/workspaces/{workspace}/isolation-preview")
+def isolation_preview(workspace: str) -> dict:
+    try:
+        return managed_worktrees.preview(workspace)
+    except (PermissionError, OSError):
+        raise HTTPException(status_code=404, detail="The selected Git project is unavailable") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+class IsolationRequest(BaseModel):
+    base_commit: str = Field(pattern="^[a-f0-9]{40,64}$")
+
+
+@app.post("/workspaces/{workspace}/isolate")
+def isolate_workspace(workspace: str, request: IsolationRequest) -> dict:
+    try:
+        return managed_worktrees.create(workspace, request.base_commit)
+    except (PermissionError, OSError):
+        raise HTTPException(status_code=404, detail="The selected Git project is unavailable") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.get("/isolated-workspaces")
+def isolated_workspaces() -> list[dict]:
+    return [{**record, "available": record['status'] == 'ready' and managed_worktrees._valid(record)} for record in managed_worktrees.list()]
+
+
+@app.post("/operator/shortcuts/{shortcut}")
+async def run_task_shortcut(shortcut: str, request: ShortcutRequest) -> ShortcutResult:
+    try:
+        query = shortcut_request(request.workspace, request.target, shortcut, skill_service, code_search, request.note)
+    except (PermissionError, OSError):
+        raise HTTPException(status_code=404, detail="The selected source file is unavailable") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    result = await agent_query(query)
+    return ShortcutResult(**result.model_dump(), warnings=shortcut_warnings(result.content))
+
+
+@app.get("/operator/progress")
+def operator_progress(workspace: str, scope: str = Query(min_length=1, max_length=200)) -> dict:
+    try:
+        return project_progress(scope, workspace, coding_workflow_service, coding_job_service, sub_agent_service, plan_service, workspace_registry)
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="The selected workspace is unavailable") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @app.get("/workspaces/{workspace}/symbols")
