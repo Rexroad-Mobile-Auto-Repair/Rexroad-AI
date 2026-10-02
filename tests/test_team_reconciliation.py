@@ -100,3 +100,36 @@ def test_indexed_citations_resolve_to_audited_sources(source_index, expected):
     result = TeamReconciler(Settings(), providers).reconcile(workers())
     assert result.reconciliation_status == expected
     assert result.requires_more_work == (expected == 'failed')
+
+
+def test_truncated_saved_evidence_cannot_be_claimed_verified():
+    results = workers()
+    results[0].source_evidence[0].truncated = True
+    result = TeamReconciler(Settings(), ProviderRegistry()).reconcile(results)
+    assert result.reconciliation_status == 'failed' and result.requires_more_work
+    assert 'truncated' in result.unresolved_gaps[-1]
+    assert 'fresh source review' in result.recommended_action
+
+
+def test_late_source_fields_are_available_as_bounded_indexed_quotes():
+    source = "# header\n" * 100 + "sequence: int"
+    results = workers()
+    for item in results:
+        item.source_evidence = [SourceExcerpt(path='models.py', text=source, audit_ref=item.task_id)]
+
+    class Provider:
+        name = 'openai_compatible'
+
+        async def generate(self, request):
+            sources = json.JSONDecoder().raw_decode(request.messages[1].content)[0]['indexed_sources']
+            selected = next(s for s in sources if 'sequence: int' in s['quote'])
+            assert all(len(s['quote']) <= 500 for s in sources)
+            return ModelResponse(provider=self.name, model=request.model, content=json.dumps({
+                'findings': [{'statement': 'Sequence is int.', 'task_ids':[selected['task_id']], 'source_indices':[selected['index']]}],
+                'recommended_action':'No additional change required.'
+            }))
+
+    providers = ProviderRegistry()
+    providers.register(Provider())
+    result = TeamReconciler(Settings(), providers).reconcile(results)
+    assert result.reconciliation_status == 'completed' and not result.requires_more_work

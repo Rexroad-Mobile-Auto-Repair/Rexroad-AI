@@ -9,7 +9,7 @@ from app.subagents import SubAgentResult
 
 class SourceExcerpt(BaseModel):
     path: str = Field(min_length=1, max_length=500)
-    text: str = Field(max_length=500)
+    text: str = Field(max_length=16000)
     audit_ref: str = Field(min_length=1, max_length=100)
     truncated: bool = False
 

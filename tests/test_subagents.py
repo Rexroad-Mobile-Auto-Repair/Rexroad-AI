@@ -203,3 +203,19 @@ async def test_provider_loop_audit_persists_trusted_routing_metadata(tmp_path):
     assert persisted.provider == loop_audit.provider
     assert persisted.model == loop_audit.model
     assert persisted.routing_reason == loop_audit.routing_reason
+
+
+@pytest.mark.asyncio
+async def test_source_audit_preserves_late_fields_and_truthful_truncation(tmp_path):
+    service = SubAgentService(tmp_path / "state.sqlite3")
+    request = SupervisorDispatchRequest(worker_profile="researcher", scope="s", instruction="research source evidence")
+    result = await service.dispatch(request, service.authorize_dispatch(request))
+    audit = service.audits("s")[0]
+    source = "# header\n" * 100 + "class AgentEvent: sequence: int"
+    service.record_tool_usage(audit.dispatch_id, "s", "filesystem.read", "read", "success", source, {"relative_path": "models.py"})
+    evidence = service.source_evidence("s", result.task_id)[0]
+    assert evidence["text"] == source
+    assert not evidence["truncated"]
+    service.record_tool_usage(audit.dispatch_id, "s", "filesystem.read", "read", "success", "x" * 16001, {"relative_path": "large.py"})
+    evidence = service.source_evidence("s", result.task_id)[1]
+    assert len(evidence["text"]) == 16000 and evidence["truncated"]

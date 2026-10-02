@@ -264,8 +264,8 @@ class SubAgentService:
         audit = next((item for item in self.audits(scope, 100) if item.task_id == task_id), None)
         if audit is None:
             return []
-        return [{"path": item['arguments']['relative_path'], "text": item.get('result', '')[:500],
-                 "audit_ref": audit.dispatch_id, "truncated": len(item.get('result', '')) >= 500}
+        return [{"path": item['arguments']['relative_path'], "text": item.get('result', '')[:16000],
+                 "audit_ref": audit.dispatch_id, "truncated": item.get('truncated', len(item.get('result', '')) >= 500)}
                 for item in audit.tool_usage if item.get('tool') == 'filesystem.read' and item.get('status') == 'success'
                 and item.get('arguments', {}).get('relative_path')][:10]
 
@@ -277,6 +277,9 @@ class SubAgentService:
         if audit is None or len(audit.tool_usage) >= 10:
             raise ValueError("audit unavailable")
         event = {"sequence": len(audit.tool_usage) + 1, "tool": tool_name, "permission": permission, "status": status, "result": str(sanitize_output(result))[:500]}
+        if tool_name == "filesystem.read" and isinstance(result, str):
+            event["result"] = result[:16000]
+            event["truncated"] = len(result) > 16000 or result.endswith("...[truncated]")
         if arguments:
             event["arguments"] = {key: str(arguments[key])[:500] for key in ("workspace", "relative_path", "operation") if key in arguments}
         usage = [*audit.tool_usage, event]
