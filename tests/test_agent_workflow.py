@@ -155,8 +155,15 @@ async def test_plain_answer_does_not_require_verification() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("verdict", ["VERIFIED", "All claims are supported.\n\nVERIFIED", "Corrected answer.", "VERIFIED but the draft needs correction."])
-async def test_verification_preserves_approved_draft_or_returns_correction(tmp_path, verdict: str) -> None:
+@pytest.mark.parametrize("verdict,approved", [
+    ("VERIFIED", True),
+    ("All claims are supported.\n\nVERIFIED", True),
+    ("VERIFIED\n\nThe draft correctly explains the source.", True),
+    ("Corrected answer.", False),
+    ("VERIFIED but the draft needs correction.", False),
+    ("The word VERIFIED is part of this corrected answer.", False),
+])
+async def test_verification_preserves_approved_draft_or_returns_correction(tmp_path, verdict: str, approved: bool) -> None:
     from app.journal.store import ActionJournal
     from app.providers.models import ProviderStreamEvent
 
@@ -183,7 +190,7 @@ async def test_verification_preserves_approved_draft_or_returns_correction(tmp_p
     journal = ActionJournal(tmp_path / "journal.sqlite3")
     service = AgentService(Settings(_env_file=None), providers, tools=tools, journal=journal)
     events = [event async for event in service.query_stream(AgentQueryRequest(message="Check repository.", workspace="repo"))]
-    expected = draft if verdict.strip().splitlines()[-1:] == ["VERIFIED"] else verdict
+    expected = draft if approved else verdict
     completed = next(event for event in events if event["type"] == "completed")
     assert completed["response"] == expected
     assert [e["text"] for e in events if e["type"] == "text_delta"] == [draft]

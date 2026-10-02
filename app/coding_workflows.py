@@ -245,6 +245,8 @@ class CodingWorkflowService:
         return item
 
     def _record_attempt(self, item: CodingWorkflow, spec_id: str, step_id: str, kind: str) -> CodingWorkflow:
+        # The preceding execution may have finished since this loop's snapshot.
+        item = self._require(item.workflow_id, item.scope)
         plan_id = item.plan_id or ""
         sequence = 1 + max((attempt.sequence for attempt in item.execution_attempts if attempt.spec_id == spec_id), default=0)
         attempt = CodingExecutionAttempt(attempt_id=str(uuid4()), workflow_id=item.workflow_id, spec_id=spec_id, plan_id=plan_id, step_id=step_id, kind=kind, sequence=sequence, status="started", created_at=datetime.now(UTC))

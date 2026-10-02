@@ -81,6 +81,19 @@ def test_patch_action_is_bounded_by_workflow_service(tmp_path: Path) -> None:
         service.prepare(item.workflow_id, "s", patches)
 
 
+@pytest.mark.parametrize("kind", ["patch", "check"])
+def test_next_attempt_preserves_previous_completion_from_stale_snapshot(tmp_path: Path, kind: str) -> None:
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))
+    stale = service._record_attempt(item, "spec-a", "step-a", kind)
+    service._finish_attempt(item.workflow_id, "s", stale.execution_attempts[-1].attempt_id, "succeeded", "trace-a")
+    service._record_attempt(stale, "spec-b", "step-b", kind)
+    restored = _service(tmp_path).get(item.workflow_id, "s")
+    assert [(a.spec_id, a.status, a.trace_id) for a in restored.execution_attempts] == [
+        ("spec-a", "succeeded", "trace-a"), ("spec-b", "started", None),
+    ]
+
+
 def test_coding_workflow_cancellation_is_terminal_and_idempotent(tmp_path: Path) -> None:
     service = _service(tmp_path)
     item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))

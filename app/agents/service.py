@@ -456,7 +456,11 @@ class AgentService:
 
                 continue
 
-            final_content = draft_content if verification_requested and response.content.strip().splitlines()[-1:] == ["VERIFIED"] else response.content
+            verdict_lines = response.content.strip().splitlines()
+            verified = bool(verdict_lines) and (
+                verdict_lines[0] == "VERIFIED" or verdict_lines[-1] == "VERIFIED"
+            )
+            final_content = draft_content if verification_requested and verified else response.content
             if self._journal is not None:
                 self._journal.append_event(
                     session_id=session_id,

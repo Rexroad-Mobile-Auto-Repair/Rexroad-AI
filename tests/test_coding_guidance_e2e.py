@@ -89,7 +89,7 @@ def test_real_guidance_lifecycle_persists_and_executes(tmp_path: Path, monkeypat
     proposal = {"changes": [
         {"relative_path": "app/example.py", "expected_text": "VALUE = 1\n", "replacement": "VALUE = 1\n# reviewed\n"},
         {"relative_path": "app/helpers.py", "expected_text": "def helper():\n    return 1\n", "replacement": "def helper():\n    return 2\n"},
-    ], "checks": [{"check_id": "pytest", "targets": ["tests/test_example.py"]}], "summary": "bounded fixture change"}
+    ], "checks": [{"check_id": "pytest", "targets": ["tests/test_example.py"]}, {"check_id": "git_diff_check"}], "summary": "bounded fixture change"}
     created = client.post(f"/supervisor-coding-workflows/{wid}/action", json={"action": "create_proposal", "scope": "scope", "proposal": proposal})
     assert created.status_code == 200, created.text
     guidance = client.get(f"/supervisor-coding-workflows/{wid}/guidance", params={"scope": "scope"}).json()
@@ -102,7 +102,7 @@ def test_real_guidance_lifecycle_persists_and_executes(tmp_path: Path, monkeypat
     assert converted_action.status_code == 200, converted_action.text
     converted = client.get(f"/supervisor-coding-workflows/{wid}/guidance", params={"scope": "scope"}).json()
     assert converted["next_action"] == "review_specs", converted_action.text
-    assert converted["action_preview"] == {"patch_count": 2, "check_count": 1}
+    assert converted["action_preview"] == {"patch_count": 2, "check_count": 2}
     assert client.post(f"/supervisor-coding-workflows/{wid}/action", json={"action": "review_specs", "scope": "scope", "decision": "accept"}).status_code == 200
     assert client.get(f"/supervisor-coding-workflows/{wid}/guidance", params={"scope": "scope"}).json()["next_action"] == "request_patch_approval"
     assert client.post(f"/supervisor-coding-workflows/{wid}/action", json={"action": "request_patch_approval", "scope": "scope"}).status_code == 200
@@ -131,6 +131,7 @@ def test_real_guidance_lifecycle_persists_and_executes(tmp_path: Path, monkeypat
     assert ready["high_impact"] is True
     executed = restarted.post(f"/supervisor-coding-workflows/{wid}/action", json={"action": "execute_patches", "scope": "scope"})
     assert executed.status_code == 200, executed.text
+    assert all(spec["execution_status"] == "succeeded" for spec in executed.json()["job"]["patch_specs"])
     assert (workspace / "app/example.py").read_text(encoding="utf-8") == "VALUE = 1\n# reviewed\n"
     assert (workspace / "app/helpers.py").read_text(encoding="utf-8") == "def helper():\n    return 2\n"
     post_patch = restarted.get(f"/supervisor-coding-workflows/{wid}/guidance", params={"scope": "scope"}).json()
@@ -138,6 +139,7 @@ def test_real_guidance_lifecycle_persists_and_executes(tmp_path: Path, monkeypat
     assert post_patch["high_impact"] is False
     checked = restarted.post(f"/supervisor-coding-workflows/{wid}/action", json={"action": "execute_checks", "scope": "scope"})
     assert checked.status_code == 200, checked.text
+    assert all(spec["execution_status"] == "succeeded" and spec["passed"] for spec in checked.json()["job"]["check_specs"])
     check_guidance = restarted.get(f"/supervisor-coding-workflows/{wid}/guidance", params={"scope": "scope"}).json()
     assert check_guidance["next_action"] == "start_verifier"
     started = restarted.post(f"/supervisor-coding-workflows/{wid}/action", json={"action": "start_verifier", "scope": "scope"})
