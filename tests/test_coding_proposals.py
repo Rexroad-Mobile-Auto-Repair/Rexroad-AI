@@ -186,3 +186,64 @@ def test_reviewed_revision_candidate_materializes_once(tmp_path: Path) -> None:
     child = proposals.materialize_revision_candidate(workflow.workflow_id, "s")
     assert child.revision_number == 2 and child.status == "ready_for_review"
     assert proposals.materialize_revision_candidate(workflow.workflow_id, "s").proposal_id == child.proposal_id
+
+
+def test_snippet_conversion_groups_same_file_and_executes_real_guarded_write(tmp_path: Path) -> None:
+    import subprocess
+
+    from app.tools.filesystem import ReadOnlyFilesystem
+
+    original = "header\nfirst = 1\nsecond = 2\nfooter\n"
+    target = tmp_path / "target.txt"
+    target.write_text(original, encoding="utf-8")
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    git("init")
+    git("add", "target.txt")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "baseline")
+    workflows = _service(tmp_path)
+    workflow = workflows.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    workflows._save(workflow.model_copy(update={"status": "awaiting_analysis_review", "analyst_task_id": "analyst"}))
+    registry = WorkspaceRegistry({"ws": tmp_path})
+    proposals = CodingProposalService(tmp_path / "state.db", workflows, registry, workflows.git)
+    proposal = proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[
+        ProposedChange(relative_path="target.txt", expected_text="first = 1", replacement="first = 3"),
+        ProposedChange(relative_path="target.txt", expected_text="second = 2", replacement="second = 4"),
+    ]))
+    proposals.review(proposal.proposal_id, "s", "accepted", "supervisor")
+
+    class Plans:
+        def create(self, request):
+            return type("Plan", (), {"id": "p", "steps": [type("Step", (), {"id": str(i)})() for i in range(len(request.steps))]})()
+    class Specs:
+        def __init__(self): self.created = []
+        def create(self, **kwargs):
+            self.created.append(kwargs)
+            return type("Spec", (), {"id": str(len(self.created))})()
+    workflows.plans, workflows.specs = Plans(), Specs()
+    converted = proposals.convert(proposal.proposal_id, "s", "ws")
+    assert len(converted.patch_spec_ids) == 1
+    assert target.read_text(encoding="utf-8") == original
+    arguments = workflows.specs.created[0]["arguments"]
+    assert workflows.specs.created[0]["session_id"] == f"coding:{workflow.workflow_id}"
+    assert arguments["expected_text"] == original
+    result = ReadOnlyFilesystem(registry).apply_patch(**arguments)
+    assert result["changed"] is True
+    assert target.read_text(encoding="utf-8") == "header\nfirst = 3\nsecond = 4\nfooter\n"
+    with pytest.raises(ValueError, match="uncommitted"):
+        ReadOnlyFilesystem(registry).apply_patch(**arguments)
+
+
+@pytest.mark.parametrize("original,anchor", [("same same", "same"), ("x" * 64001, "x" * 64001)], ids=["ambiguous", "oversized"])
+def test_conversion_rejects_ambiguous_or_oversized_file_before_creating_specs(tmp_path: Path, original: str, anchor: str) -> None:
+    (tmp_path / "target.txt").write_text(original, encoding="utf-8")
+    workflows = _service(tmp_path)
+    workflow = workflows.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    workflows._save(workflow.model_copy(update={"status": "awaiting_analysis_review", "analyst_task_id": "analyst"}))
+    proposals = CodingProposalService(tmp_path / "state.db", workflows, WorkspaceRegistry({"ws": tmp_path}), workflows.git)
+    proposal = proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[ProposedChange(relative_path="target.txt", expected_text=anchor, replacement="changed")]))
+    proposals.review(proposal.proposal_id, "s", "accepted", "supervisor")
+    with pytest.raises(ValueError, match="ambiguous|limit"):
+        proposals.convert(proposal.proposal_id, "s", "ws")
+    assert proposals.get(proposal.proposal_id, "s").conversion_status is None
+    assert (tmp_path / "target.txt").read_text(encoding="utf-8") == original

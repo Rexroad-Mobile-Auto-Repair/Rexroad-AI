@@ -265,14 +265,23 @@ async def test_workspace_bound_continuation_inherits_omitted_workspace(tmp_path:
 
 def test_event_payload_content_is_exactly_bounded(tmp_path: Path) -> None:
     journal = ActionJournal(tmp_path / "journal.sqlite3")
-    content = "x" * (journal.EVENT_CONTENT_LIMIT + 37)
+    content = "x" * (journal.CHAT_CONTENT_LIMIT + 37)
+    for kind in ("user_request", "final_response", "model_response"):
+        journal.append_event(session_id="bounded", event_type=kind,
+                             payload={"content": content, "diagnostic": content})
+    persisted = ActionJournal(tmp_path / "journal.sqlite3").list_events_for_session("bounded")
+    assert [event.sequence for event in persisted] == [1, 2, 3]
+    for event in persisted:
+        limit = journal.CHAT_CONTENT_LIMIT if event.event_type in ("user_request", "final_response") else journal.EVENT_CONTENT_LIMIT
+        assert event.payload["content"] == content[:limit]
+        assert event.payload["diagnostic"] == content[:journal.EVENT_CONTENT_LIMIT]
 
-    event = journal.append_event(session_id="bounded", event_type="user_request", payload={"content": content})
-    persisted = journal.list_events_for_session("bounded")[0]
 
-    assert len(persisted.payload["content"]) == journal.EVENT_CONTENT_LIMIT
-    assert persisted.payload["content"] == content[: journal.EVENT_CONTENT_LIMIT]
-    assert persisted.id == event.id
+def test_long_answer_survives_journal_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "journal.sqlite3"
+    content = "a" * 5990 + "END_MARKER"
+    ActionJournal(path).append_event(session_id="long", event_type="final_response", payload={"content": content})
+    assert ActionJournal(path).list_events_for_session("long")[0].payload["content"] == content
 
 
 def test_event_sequence_is_unique_per_session_and_legacy_actions_remain_readable(tmp_path: Path) -> None:

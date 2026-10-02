@@ -17,6 +17,7 @@ def test_build_workspace_registry() -> None:
     assert registry.names() == [
         "acceptance_test",
         "knowledge",
+        "rexroad_ai_journal",
         "seo_crawler",
     ]
 

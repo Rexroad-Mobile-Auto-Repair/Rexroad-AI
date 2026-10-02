@@ -115,6 +115,7 @@ async def test_tool_answer_requires_verification_pass() -> None:
 
     first_request = provider.requests[0]
     verification_request = provider.requests[2]
+    assert verification_request.tools == []
 
     assert first_request.messages[0].role == "system"
     assert (
@@ -151,3 +152,43 @@ async def test_plain_answer_does_not_require_verification() -> None:
 
     assert response.content == "Plain answer."
     assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["VERIFIED", "All claims are supported.\n\nVERIFIED", "Corrected answer.", "VERIFIED but the draft needs correction."])
+async def test_verification_preserves_approved_draft_or_returns_correction(tmp_path, verdict: str) -> None:
+    from app.journal.store import ActionJournal
+    from app.providers.models import ProviderStreamEvent
+
+    draft = "Source-grounded answer. " * 250
+    class VerdictProvider(VerifyingProvider):
+        async def generate(self, request):
+            response = await super().generate(request)
+            if len(self.requests) == 2:
+                response.content = draft
+            if len(self.requests) == 3:
+                response.content = verdict
+            return response
+        async def stream(self, request):
+            response = await self.generate(request)
+            if response.content:
+                yield ProviderStreamEvent(type="text_delta", text=response.content)
+            yield ProviderStreamEvent(type="completed", response=response)
+
+    provider = VerdictProvider()
+    providers = ProviderRegistry()
+    providers.register(provider)
+    tools = ToolRegistry()
+    tools.register(ToolDefinition(name="git.status", description="Read Git status.", permission="read", handler=lambda workspace: "## main"))
+    journal = ActionJournal(tmp_path / "journal.sqlite3")
+    service = AgentService(Settings(_env_file=None), providers, tools=tools, journal=journal)
+    events = [event async for event in service.query_stream(AgentQueryRequest(message="Check repository.", workspace="repo"))]
+    expected = draft if verdict.strip().splitlines()[-1:] == ["VERIFIED"] else verdict
+    completed = next(event for event in events if event["type"] == "completed")
+    assert completed["response"] == expected
+    assert [e["text"] for e in events if e["type"] == "text_delta"] == [draft]
+    persisted = journal.list_events_for_session(completed["session_id"])
+    assert next(e for e in persisted if e.event_type == "verification_response").payload["content"] == verdict
+    assert persisted[-1].event_type == "final_response"
+    assert persisted[-1].payload["content"] == expected
+    assert provider.requests[-1].tools == []

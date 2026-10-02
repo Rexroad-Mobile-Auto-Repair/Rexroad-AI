@@ -62,9 +62,12 @@ class PlanService:
             connection.execute("BEGIN IMMEDIATE")
             plan = self._read_plan(connection, plan_id, scope)
             if plan is None: return None
-            if plan.status in {"completed", "failed", "cancelled"}:
-                raise ValueError("cannot mutate a terminal plan")
             step = next((item for item in plan.steps if item.id == step_id), None)
+            # A failed parallel peer must not prevent already running work from
+            # recording its terminal outcome. Never start new work on a failed plan.
+            finishing_peer = plan.status == "failed" and step is not None and step.status == "in_progress" and status in {"completed", "failed"}
+            if plan.status in {"completed", "failed", "cancelled"} and not finishing_peer:
+                raise ValueError("cannot mutate a terminal plan")
             if step is None or not self._allowed(step.status, status):
                 raise ValueError("invalid plan step transition")
             now = datetime.now(UTC)

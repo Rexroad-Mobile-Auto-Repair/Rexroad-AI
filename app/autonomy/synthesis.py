@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.subagents import SubAgentResult
+
+
+class SourceExcerpt(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    text: str = Field(max_length=500)
+    audit_ref: str = Field(min_length=1, max_length=100)
+    truncated: bool = False
 
 
 class WorkerResultContract(BaseModel):
@@ -16,6 +25,7 @@ class WorkerResultContract(BaseModel):
     symbols_examined: list[str] = Field(default_factory=list, max_length=50)
     risks: list[str] = Field(default_factory=list, max_length=20)
     recommendations: list[str] = Field(default_factory=list, max_length=20)
+    source_evidence: list[SourceExcerpt] = Field(default_factory=list, max_length=10)
 
 
 class TeamSynthesis(BaseModel):
@@ -25,12 +35,18 @@ class TeamSynthesis(BaseModel):
     unresolved_gaps: list[str] = Field(default_factory=list, max_length=50)
     recommended_action: str | None = Field(default=None, max_length=1000)
     requires_more_work: bool = False
+    reconciliation_status: Literal["not_required", "pending", "completed", "failed"] = "not_required"
 
 
 def synthesize(results: list[WorkerResultContract]) -> TeamSynthesis:
     summaries = [item.summary for item in results if item.status == "completed"]
-    disagreements = [item.summary for item in results if item.status != "completed"]
-    return TeamSynthesis(findings=summaries[:50], agreements=summaries[:50] if len(summaries) < 2 else ["Multiple workers completed independently."], disagreements=disagreements[:50], unresolved_gaps=["A worker result is unavailable."] if disagreements else [], requires_more_work=bool(disagreements))
+    failed = [item for item in results if item.status != "completed"]
+    gaps = [f"Worker {item.task_id} ({item.worker_type}) did not complete." for item in failed]
+    pending = len(summaries) > 1
+    if pending:
+        gaps.append("Cross-worker findings have not been reconciled.")
+    return TeamSynthesis(findings=summaries[:50], unresolved_gaps=gaps[:50], requires_more_work=bool(gaps),
+                         reconciliation_status="pending" if pending else "not_required")
 
 
 def from_subagent(result: SubAgentResult, evidence_refs: list[str] | None = None) -> WorkerResultContract:

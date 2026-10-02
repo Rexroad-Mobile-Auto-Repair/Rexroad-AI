@@ -26,6 +26,9 @@ class SupervisorPolicy:
     def recommend(self, request: SupervisorRecommendationRequest) -> SupervisorRecommendation:
         text = request.instruction.casefold()
         kind = (request.task_kind or "").casefold()
+        for role in ("test_analyst", "architecture_analyst", "security_analyst"):
+            if text.startswith(f"inspect code as {role}:"):
+                return SupervisorRecommendation(action="delegate", profile=role, category="code_analysis", reason=f"The task explicitly requests {role} inspection.", prerequisites=["explicit workspace"] if not request.workspace else [], scope=request.scope, workspace=request.workspace)
         if text.startswith("verify completed work"):
             return SupervisorRecommendation(action="delegate", profile="verifier", category="verification", reason="The task requests an independent verification check.", prerequisites=["completed result"], scope=request.scope, workspace=request.workspace)
         if text.startswith("inspect code"):

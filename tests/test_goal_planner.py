@@ -60,6 +60,21 @@ def task(key: str, deps: list[str] | None = None, worker: str = "direct") -> dic
 
 
 @pytest.mark.asyncio
+async def test_read_only_chat_goal_rejects_mutation_before_persistence(tmp_path):
+    planner = service(tmp_path, json.dumps({"tasks": [task("change", worker="supervised_coding")]}))
+    with pytest.raises(ValueError, match="read-only planning"):
+        await planner.decompose(GoalRequest(goal="Read-only inspection", scope="chat:s", workspace="repo", read_only=True), provider_name="openai_compatible", model="test")
+    assert planner._autonomy._plans.list("chat:s") == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_direct_inspection_cannot_be_reclassified_as_research(tmp_path):
+    planner = service(tmp_path, json.dumps({"tasks": [{**task("inspect"), "objective": "Investigate local source"}]}))
+    _, plan = await planner.decompose(GoalRequest(goal="Read-only inspection", scope="chat:s", workspace="repo", read_only=True), provider_name="openai_compatible", model="test")
+    assert plan.steps[0].metadata["worker"] == "direct"
+
+
+@pytest.mark.asyncio
 async def test_goal_decomposition_maps_and_persists_graph(tmp_path: Path) -> None:
     planner = service(tmp_path, json.dumps({"tasks": [task("map"), task("tests", ["map"], "code_analyst")] }))
     output, plan = await planner.decompose(GoalRequest(goal="inspect tests", scope="s", workspace="repo"), provider_name="openai_compatible", model="test")

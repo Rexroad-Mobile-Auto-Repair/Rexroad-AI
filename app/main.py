@@ -8,11 +8,18 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
-from app.agents.service import AgentLoopLimitError, AgentService, AgentSessionError
+from app.agents.planned_review import ChatPlannedReview
+from app.agents.service import (
+    AgentLoopLimitError,
+    AgentNoProgressError,
+    AgentService,
+    AgentSessionError,
+)
 from app.autonomy.analysis import PlannedAnalysis
 from app.autonomy.bridge import PlannedTaskExecutionBridge
 from app.autonomy.dispatch import PlannedWorkerDispatcher
 from app.autonomy.planner import GoalDecompositionService, GoalRequest
+from app.autonomy.reconciliation import TeamReconciler
 from app.autonomy.service import AutonomousContinuationService
 from app.autonomy.team import AutonomousTeamCoordinator
 from app.coding_actions import (
@@ -160,7 +167,7 @@ CHAT_HTML = CHAT_HTML.replace("currentSessionId=id;messages.innerHTML='';events.
 CHAT_HTML = CHAT_HTML.replace("$('new').onclick=()=>{currentSessionId=null;messages.innerHTML=", "$('new').onclick=()=>{currentSessionId=null;$('workspace').disabled=false;messages.innerHTML=")
 CHAT_HTML = CHAT_HTML.replace("body:JSON.stringify({message:text,workspace:$('workspace').value||null})", "body:JSON.stringify({message:text,session_id:currentSessionId,workspace:$('workspace').value||null})")
 CHAT_HTML = CHAT_HTML.replace("add('assistant',d.content||'');$('status')", "currentSessionId=d.session_id;add('assistant',d.content||'');$('status')")
-CHAT_HTML = CHAT_HTML.replace("</script></body></html>", """const oldSubmit=$('form').onsubmit;$('form').onsubmit=async e=>{e.preventDefault();if(busy)return;const text=$('input').value.trim();if(!text)return;busy=true;$('send').disabled=true;add('user',text);$('input').value='';let answer='';try{const r=await fetch('/agent/query/stream',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,session_id:currentSessionId,workspace:$('workspace').value||null})});if(!r.ok)throw Error('Request failed');const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const part=await reader.read();if(part.done)break;buffer+=decoder.decode(part.value,{stream:true});const chunks=buffer.split('\\n\\n');buffer=chunks.pop();for(const chunk of chunks){const line=chunk.split('\\n').find(x=>x.startsWith('data: '));if(!line)continue;const data=JSON.parse(line.slice(6)),type=chunk.split('\\n').find(x=>x.startsWith('event: '))?.slice(7);if(type==='session')currentSessionId=data.session_id;if(type==='status')$('status').textContent=data.message;if(type==='text_delta'){answer+=data.text;if(!messages.lastElementChild||!messages.lastElementChild.classList.contains('assistant'))add('assistant','');messages.lastElementChild.textContent=answer;}if(type==='completed'){answer=data.response;if(messages.lastElementChild?.classList.contains('assistant'))messages.lastElementChild.textContent=answer;}if(type==='error')throw Error(data.message);}}$('status').textContent='';load();}catch(err){$('status').textContent=err.message;}finally{busy=false;$('send').disabled=false;}};</script></body></html>""")
+CHAT_HTML = CHAT_HTML.replace("</script></body></html>", """const oldSubmit=$('form').onsubmit;$('form').onsubmit=async e=>{e.preventDefault();if(busy)return;const text=$('input').value.trim();if(!text)return;busy=true;$('send').disabled=true;add('user',text);$('input').value='';let answer='';try{const r=await fetch('/agent/query/stream',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,session_id:currentSessionId,workspace:$('workspace').value||null})});if(!r.ok)throw Error('Request failed');const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const part=await reader.read();if(part.done)break;buffer+=decoder.decode(part.value,{stream:true});const chunks=buffer.split('\\n\\n');buffer=chunks.pop();for(const chunk of chunks){const line=chunk.split('\\n').find(x=>x.startsWith('data: '));if(!line)continue;const data=JSON.parse(line.slice(6)),type=chunk.split('\\n').find(x=>x.startsWith('event: '))?.slice(7);if(type==='session')currentSessionId=data.session_id;if(type==='status')$('status').textContent=data.message;if(type==='text_delta'){answer+=data.text;if(!messages.lastElementChild||!messages.lastElementChild.classList.contains('assistant'))add('assistant','');messages.lastElementChild.textContent=answer;}if(type==='completed'){answer=data.response||'';if(!messages.lastElementChild||!messages.lastElementChild.classList.contains('assistant'))add('assistant','');messages.lastElementChild.textContent=answer;}if(type==='error')throw Error(data.message);}}$('status').textContent='';load();}catch(err){$('status').textContent=err.message;}finally{busy=false;$('send').disabled=false;}};</script></body></html>""")
 
 settings = Settings()
 
@@ -215,13 +222,47 @@ coding_action_service = SupervisorCodingActionService(coding_job_service, coding
 coding_guidance_service = CodingGuidanceService(coding_job_service)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 research_action_service = ResearchWorkflowActionService(supervisor_workflow_service)
-team_coordinator = AutonomousTeamCoordinator(settings.action_journal_path, plan_service, autonomy_service)
+team_coordinator = AutonomousTeamCoordinator(settings.action_journal_path, plan_service, autonomy_service, TeamReconciler(settings, provider_registry, sub_agent_service.source_evidence))
 planned_analysis = PlannedAnalysis(plan_service, sub_agent_service)
 tool_registry.register(ToolDefinition(name="autonomy.analyze", description="Internal scoped planned analysis", permission="read", handler=planned_analysis.run, internal=True))
 planned_worker_dispatcher = PlannedWorkerDispatcher(coding=coding_workflow_service, research=supervisor_workflow_service, teams=team_coordinator)
 planned_execution_bridge = PlannedTaskExecutionBridge(plan_service, autonomy_service, planned_worker_dispatcher, analysis_tool="autonomy.analyze")
 supervisor_policy = SupervisorPolicy()
 supervisor_dashboard_service = SupervisorDashboardService(workspace_registry, project_state_service, coding_workflow_service, coding_job_service, coding_guidance_service, supervisor_workflow_service, plan_service, execution_trace_service, tool_registry)
+async def _create_chat_plan(goal: str, scope: str, workspace: str, read_only: bool) -> ProjectPlan:
+    _output, plan = await goal_decomposition_service.decompose(
+        GoalRequest(goal=goal, scope=scope, workspace=workspace, read_only=read_only),
+        provider_name=settings.default_provider, model=get_default_model(settings, settings.default_provider),
+    )
+    return plan
+
+
+def _chat_workflow_records(plan: ProjectPlan) -> list[dict]:
+    records = []
+    for workflow in coding_workflow_service.list(plan.scope, plan.workspace, 100):
+        if workflow.parent_plan_id == plan.id:
+            job = coding_job_service.get(workflow.workflow_id, plan.scope)
+            records.append({"workflow_id": workflow.workflow_id, "proposal_id": job.proposal_id if job else None,
+                            "status": job.status if job else workflow.status})
+    return records
+
+
+def _cancel_chat_plan(plan: ProjectPlan) -> None:
+    # Cancel only children owned by this exact scoped parent. No file operations.
+    autonomy_service.cancel(plan.id, plan.scope)
+    for workflow in coding_workflow_service.list(plan.scope, plan.workspace, 100):
+        if workflow.parent_plan_id == plan.id and workflow.status not in {"completed", "failed", "cancelled"}:
+            coding_workflow_service.cancel(workflow.workflow_id, plan.scope, "Parent plan cancelled from chat")
+    for workflow in supervisor_workflow_service.list(plan.scope, 100):
+        if workflow.plan_id == plan.id and workflow.status not in {"completed", "failed", "cancelled"}:
+            supervisor_workflow_service.cancel(workflow.workflow_id, plan.scope, "Parent plan cancelled from chat")
+
+
+chat_planned_review = ChatPlannedReview(plan_service, autonomy_service, team_coordinator,
+                                      lambda plan_id, scope: _continue_plan(plan_id, scope), workspace_registry.get_root,
+                                      create_plan=_create_chat_plan, workflow_records=_chat_workflow_records,
+                                      worker_records=lambda plan: sub_agent_service.for_plan(plan.id, plan.scope),
+                                      cancel_plan=_cancel_chat_plan)
 
 agent_service = AgentService(
     settings,
@@ -232,6 +273,7 @@ agent_service = AgentService(
     include_identity_context=True,
     skill_service=skill_service,
     skill_workspace_resolver=workspace_registry.get_root,
+    planned_review_handler=chat_planned_review.handle,
 )
 diagnostics = build_local_diagnostics(settings)
 
@@ -522,6 +564,8 @@ async def agent_query(
     except AgentSessionError as exc:
         status = 404 if str(exc) == "Session not found" else 409
         raise HTTPException(status_code=status, detail=str(exc)) from None
+    except AgentNoProgressError:
+        raise HTTPException(status_code=422, detail="Repeated tool calls made no progress; the request was stopped") from None
     except AgentLoopLimitError:
         raise HTTPException(status_code=422, detail="The request exceeded the bounded tool-use limit") from None
 
@@ -553,6 +597,8 @@ async def agent_query_stream(request: AgentQueryRequest) -> StreamingResponse:
                 yield _stream_event(event_type, event)
         except AgentSessionError as exc:
             yield _stream_event("error", {"message": str(exc)[:200]})
+        except AgentNoProgressError:
+            yield _stream_event("error", {"message": "Repeated tool calls made no progress; the request was stopped"})
         except AgentLoopLimitError:
             yield _stream_event("error", {"message": "The request exceeded the bounded tool-use limit"})
         except Exception:  # noqa: BLE001 - streaming boundary returns safe failure

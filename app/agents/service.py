@@ -32,12 +32,18 @@ AGENT_WORKFLOW_PROMPT = "Before answering, determine what evidence is needed. Us
 VERIFICATION_PROMPT = (
     "Verification pass: review the draft answer against the tool evidence "
     "already collected. Check for unsupported claims, missing evidence, or "
-    "contradictions. Use additional available read-only tools if needed. "
-    "Return the final answer only after verification is complete. Answer the user's request directly; do not lead with internal verification commentary."
+    "contradictions. Use only the saved evidence; no further tools are available. Clearly state any remaining evidence limitation. "
+    "If the draft fully answers the request and is supported by the evidence, return exactly VERIFIED. "
+    "Otherwise return the complete corrected final answer, clearly stating any evidence limitation. "
+    "Do not repeat a correct draft or lead with internal verification commentary."
 )
 
 
 class AgentLoopLimitError(RuntimeError):
+    pass
+
+
+class AgentNoProgressError(AgentLoopLimitError):
     pass
 
 
@@ -59,6 +65,7 @@ class AgentService:
         compaction_service: ContextCompactionService | None = None,
         skill_service: SkillService | None = None,
         skill_workspace_resolver: Callable[[str], Path] | None = None,
+        planned_review_handler: Callable[[str, str | None, str], Awaitable[str | None]] | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -71,6 +78,7 @@ class AgentService:
         self._compaction = compaction_service or ContextCompactionService(journal)
         self._skills = skill_service
         self._skill_workspace_resolver = skill_workspace_resolver
+        self._planned_review_handler = planned_review_handler
 
     @staticmethod
     def _history_messages(journal: ActionJournal, session_id: str, budget: int) -> list[ModelMessage]:
@@ -175,6 +183,15 @@ class AgentService:
             await event_callback({"type": "session", "session_id": session_id})
 
         effective_request = request.model_copy(update={"workspace": workspace})
+        if self._planned_review_handler is not None and skill is None:
+            content = await self._planned_review_handler(request.message, workspace, session_id)
+            if content is not None:
+                if self._journal is not None:
+                    self._journal.append_event(session_id=session_id, event_type="final_response",
+                                               payload={"provider": provider_name, "model": model, "content": content})
+                if event_callback:
+                    await event_callback({"type": "completed", "session_id": session_id, "response": content})
+                return AgentQueryResponse(provider=provider_name, model=model, session_id=session_id, content=content)
         tool_specs = self._tool_specs_for_request(effective_request)
         if skill is not None and skill.allowed_tools:
             tool_specs = [spec for spec in tool_specs if spec.name in set(skill.allowed_tools)]
@@ -220,6 +237,7 @@ class AgentService:
         tool_rounds = 0
         used_tools = False
         verification_requested = False
+        draft_content = ""
         previous_tool_progress: set[str] = set()
 
         while True:
@@ -236,12 +254,12 @@ class AgentService:
                 )
                 streamed_text = ""
                 streamed_calls = []
-                async for stream_event in provider.stream(ModelRequest(model=model, messages=context.messages, tools=tool_specs)):
+                async for stream_event in provider.stream(ModelRequest(model=model, messages=context.messages, tools=[] if verification_requested else tool_specs)):
                     if stream_event.type == "provider_error":
                         raise RuntimeError(stream_event.message or "provider stream failed")
                     if stream_event.type == "text_delta":
                         streamed_text += stream_event.text
-                        if not streamed_calls and event_callback:
+                        if not streamed_calls and event_callback and not verification_requested:
                             await event_callback({"type": "text_delta", "text": stream_event.text[:12000]})
                     elif stream_event.type == "tool_call_complete" and stream_event.tool_call is not None:
                         streamed_calls.append(stream_event.tool_call)
@@ -274,6 +292,8 @@ class AgentService:
                 )
 
             if response.tool_calls:
+                if verification_requested:
+                    raise RuntimeError("Verification must use saved evidence without new tool calls")
                 if self._tools is None:
                     if self._journal is not None:
                         self._journal.append_event(
@@ -363,7 +383,7 @@ class AgentService:
                     if tool_rounds > 2 and progress_key in previous_tool_progress:
                         if self._journal is not None:
                             self._journal.append_event(session_id=session_id, event_type="error", payload={"stage": "no_progress"})
-                        raise AgentLoopLimitError("Repeated tool call made no progress")
+                        raise AgentNoProgressError("Repeated tool call made no progress")
                     previous_tool_progress.add(progress_key)
 
                     if isinstance(result, str):
@@ -411,6 +431,7 @@ class AgentService:
 
             if used_tools and not verification_requested:
                 verification_requested = True
+                draft_content = response.content
 
                 if self._journal is not None:
                     self._journal.append_event(
@@ -435,6 +456,7 @@ class AgentService:
 
                 continue
 
+            final_content = draft_content if verification_requested and response.content.strip().splitlines()[-1:] == ["VERIFIED"] else response.content
             if self._journal is not None:
                 self._journal.append_event(
                     session_id=session_id,
@@ -445,17 +467,17 @@ class AgentService:
                     self._journal.append_event(
                         session_id=session_id,
                         event_type="final_response",
-                        payload={"provider": response.provider, "model": response.model, "content": response.content},
+                        payload={"provider": response.provider, "model": response.model, "content": final_content},
                     )
 
             result = AgentQueryResponse(
                 provider=response.provider,
                 model=response.model,
                 session_id=session_id,
-                content=response.content,
+                content=final_content,
             )
             if event_callback:
-                await event_callback({"type": "completed", "session_id": session_id, "response": response.content[:12000]})
+                await event_callback({"type": "completed", "session_id": session_id, "response": final_content[:12000]})
             return result
 
     async def query_stream(self, request: AgentQueryRequest) -> AsyncIterator[dict]:
@@ -465,6 +487,8 @@ class AgentService:
             await queue.put(event)
 
         task = asyncio.create_task(self.query(request, event_callback=emit))
+        # Wake the iterator even when query fails before emitting completion.
+        task.add_done_callback(lambda _: queue.put_nowait(None))
         try:
             while True:
                 if task.done() and queue.empty():

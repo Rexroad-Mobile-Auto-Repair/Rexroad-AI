@@ -136,26 +136,47 @@ class CodingProposalService:
             if change.expected_text not in path.read_text(encoding="utf-8", errors="replace"): raise ValueError("expected text no longer matches")
         for check in proposal.checks:
             if check.check_id not in self.ALLOWED_CHECKS: raise ValueError("unsupported check")
-        steps = [PlanStepCreate(title=f"Apply {c.relative_path}", metadata={"proposal_id": proposal_id}) for c in proposal.changes] + [PlanStepCreate(title=f"Run {c.check_id}", metadata={"proposal_id": proposal_id}) for c in proposal.checks]
+        workflow = self.workflows.get(proposal.workflow_id, scope)
+        if workflow is None:
+            raise ValueError("workflow not found")
+        session_id = workflow.parent_session_id or f"coding:{proposal.workflow_id}"
+        # The mutation tool compares the whole file and rejects dirty targets.
+        # Combine all approved snippets for a file into one guarded write.
+        originals: dict[str, str] = {}
+        replacements: dict[str, str] = {}
+        for change in proposal.changes:
+            name = change.relative_path
+            if name not in originals:
+                originals[name] = self.workspaces.resolve_path(workspace, name).read_text(encoding="utf-8")
+                replacements[name] = originals[name]
+            if replacements[name].count(change.expected_text) != 1:
+                raise ValueError("patch anchor is ambiguous or conflicts with another change")
+            replacements[name] = replacements[name].replace(change.expected_text, change.replacement, 1)
+        patches = [ProposedChange(relative_path=name, expected_text=text, replacement=replacements[name])
+                   for name, text in originals.items()]
+        if any(len(value.encode("utf-8")) > 64_000 for patch in patches
+               for value in (patch.expected_text, patch.replacement)):
+            raise ValueError("patch payload exceeds limit")
+        steps = [PlanStepCreate(title=f"Apply {c.relative_path}", metadata={"proposal_id": proposal_id}) for c in patches] + [PlanStepCreate(title=f"Run {c.check_id}", metadata={"proposal_id": proposal_id}) for c in proposal.checks]
         patch_ids: list[str] = []; check_ids: list[str] = []
         updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids, "conversion_status": "converted", "spec_review_status": "pending", "converted_at": datetime.now(UTC), "updated_at": datetime.now(UTC)})
         # Keep lightweight test doubles and older integrations compatible; the
         # real services always take the atomic connection-aware path below.
         if not hasattr(self.workflows.plans, "create_with_connection"):
             plan = self.workflows.plans.create(PlanCreate(scope=scope, workspace=workspace, goal=proposal.objective, steps=steps))
-            for step, change in zip(plan.steps, proposal.changes):
-                patch_ids.append(self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="filesystem.apply_patch", arguments={"workspace": workspace, "relative_path": change.relative_path, "expected_text": change.expected_text, "replacement": change.replacement}, verification={"type": "result_present"}).id)
-            for step, check in zip(plan.steps[len(proposal.changes):], proposal.checks):
-                check_ids.append(self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}).id)
+            for step, change in zip(plan.steps, patches):
+                patch_ids.append(self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="filesystem.apply_patch", arguments={"workspace": workspace, "relative_path": change.relative_path, "expected_text": change.expected_text, "replacement": change.replacement}, verification={"type": "result_present"}, session_id=session_id).id)
+            for step, check in zip(plan.steps[len(patches):], proposal.checks):
+                check_ids.append(self.workflows.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}, session_id=session_id).id)
             return updated.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids})
         with SQLiteDatabase(self.path).transaction(immediate=True) as connection:
             plan = self.workflows.plans.create_with_connection(connection, PlanCreate(scope=scope, workspace=workspace, goal=proposal.objective, steps=steps))
             self._fail("plan_insert")
-            for index, (step, change) in enumerate(zip(plan.steps, proposal.changes), 1):
-                spec = self.workflows.specs.create_with_connection(connection, scope=scope, plan_id=plan.id, step_id=step.id, tool_name="filesystem.apply_patch", arguments={"workspace": workspace, "relative_path": change.relative_path, "expected_text": change.expected_text, "replacement": change.replacement}, verification={"type": "result_present"}, validate_step=False)
+            for index, (step, change) in enumerate(zip(plan.steps, patches), 1):
+                spec = self.workflows.specs.create_with_connection(connection, scope=scope, plan_id=plan.id, step_id=step.id, tool_name="filesystem.apply_patch", arguments={"workspace": workspace, "relative_path": change.relative_path, "expected_text": change.expected_text, "replacement": change.replacement}, verification={"type": "result_present"}, session_id=session_id, validate_step=False)
                 patch_ids.append(spec.id); self._fail(f"patch_spec_insert_{index}")
-            for index, (step, check) in enumerate(zip(plan.steps[len(proposal.changes):], proposal.checks), 1):
-                spec = self.workflows.specs.create_with_connection(connection, scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}, validate_step=False)
+            for index, (step, check) in enumerate(zip(plan.steps[len(patches):], proposal.checks), 1):
+                spec = self.workflows.specs.create_with_connection(connection, scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}, session_id=session_id, validate_step=False)
                 check_ids.append(spec.id); self._fail(f"check_spec_insert_{index}")
             updated = proposal.model_copy(update={"patch_spec_ids": patch_ids, "check_spec_ids": check_ids, "conversion_status": "converted", "spec_review_status": "pending", "converted_at": datetime.now(UTC), "updated_at": datetime.now(UTC)})
             self._fail("proposal_metadata")
@@ -165,7 +186,15 @@ class CodingProposalService:
     def spec_review(self, proposal_id: str, scope: str) -> dict:
         proposal = self.get(proposal_id, scope)
         if proposal is None or proposal.conversion_status != "converted": raise ValueError("proposal specs unavailable")
-        return {"proposal_id": proposal.proposal_id, "workflow_id": proposal.workflow_id, "scope": proposal.scope, "workspace": proposal.workspace, "status": proposal.spec_review_status, "patch_specs": [{"spec_id": sid, "tool": "filesystem.apply_patch", "relative_path": c.relative_path, "expected_preview": c.expected_text[:500], "replacement_preview": c.replacement[:500], "expected_hash": proposal.target_hashes.get(c.relative_path)} for sid, c in zip(proposal.patch_spec_ids, proposal.changes)], "check_specs": [{"spec_id": sid, "tool": "workspace.run_check", "check_id": c.check_id, "targets": c.targets} for sid, c in zip(proposal.check_spec_ids, proposal.checks)]}
+        # Older saved proposals can still have one spec per snippet.
+        changes = proposal.changes
+        if len(proposal.patch_spec_ids) != len(changes):
+            names = list(dict.fromkeys(c.relative_path for c in changes))
+            changes = [ProposedChange(relative_path=name,
+                       expected_text="\n".join(c.expected_text for c in proposal.changes if c.relative_path == name),
+                       replacement="\n".join(c.replacement for c in proposal.changes if c.relative_path == name))
+                       for name in names]
+        return {"proposal_id": proposal.proposal_id, "workflow_id": proposal.workflow_id, "scope": proposal.scope, "workspace": proposal.workspace, "status": proposal.spec_review_status, "patch_specs": [{"spec_id": sid, "tool": "filesystem.apply_patch", "relative_path": c.relative_path, "expected_preview": c.expected_text[:500], "replacement_preview": c.replacement[:500], "expected_hash": proposal.target_hashes.get(c.relative_path)} for sid, c in zip(proposal.patch_spec_ids, changes)], "check_specs": [{"spec_id": sid, "tool": "workspace.run_check", "check_id": c.check_id, "targets": c.targets} for sid, c in zip(proposal.check_spec_ids, proposal.checks)]}
 
     def preview(self, proposal_id: str, scope: str) -> dict:
         proposal = self.get(proposal_id, scope)

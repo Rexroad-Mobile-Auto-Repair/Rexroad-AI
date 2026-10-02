@@ -22,6 +22,7 @@ class GoalRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=4000)
     scope: str = Field(min_length=1, max_length=200)
     workspace: str | None = Field(default=None, max_length=100)
+    read_only: bool = False
 
 
 class DecomposedTask(BaseModel):
@@ -60,18 +61,20 @@ class GoalDecompositionService:
         if request.workspace:
             evidence = self._navigator.navigate(request.workspace, "map")
             map_hint = json.dumps(evidence, sort_keys=True)[:16000]
-        planner_request = ModelRequest(model=model, messages=[ModelMessage(role="user", content=(f"Goal: {request.goal}\nWorkspace: {request.workspace or 'none'}\nGrounded pre-plan repository evidence (live, bounded): {map_hint}\nUse only discovered file paths as established facts. If a target is not listed, describe it as needing location. Keep simple repository changes minimal: normally one inspection task, one coherent supervised_coding task, and only genuinely independent verification. The supervised_coding workflow already owns analysis, proposal, specification, approval, patch, checks, and verifier; do not create autonomous tasks for those internal stages. Do not add a researcher merely to reread local files when this evidence is sufficient. Use only worker names direct, researcher, code_analyst, verifier, supervised_coding, mcp, skill. Return JSON only."))])
+        planner_request = ModelRequest(model=model, messages=[ModelMessage(role="user", content=(f"Goal: {request.goal}\nRead-only required: {request.read_only}. If true, use only direct or specialized analysts with read/repo_map/navigation categories and mutation_required false.\nWorkspace: {request.workspace or 'none'}\nGrounded pre-plan repository evidence (live, bounded): {map_hint}\nUse only discovered file paths as established facts. If a target is not listed, describe it as needing location. Keep simple repository changes minimal: normally one inspection task, one coherent supervised_coding task, and only genuinely independent verification. The supervised_coding workflow already owns analysis, proposal, specification, approval, patch, checks, and verifier; do not create autonomous tasks for those internal stages. Do not add a researcher merely to reread local files when this evidence is sufficient. Use worker names direct, researcher, code_analyst, test_analyst, architecture_analyst, security_analyst, verifier, supervised_coding, mcp, skill. Choose roles that match the requested work and honor explicitly requested independent analysts. Analysis objectives must ask for source inspection only, not plan creation or execution. Read-only analyses must not invent validation or error-handling requirements. Return JSON only."))])
         output = await self._structured.generate(provider, planner_request, PlannerOutput, name="rexroad_goal_decomposition")
         validated = self._validate(self._normalize(output))
+        if request.read_only and any(task.mutation_required or task.worker not in {"direct", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst"} or task.tool_category not in {"read", "repo_map", "navigation", "git_status", "filesystem_read"} for task in validated.tasks):
+            raise ValueError("read-only planning requires only source analysis tasks")
         plan_steps = []
         positions = {task.key: index for index, task in enumerate(validated.tasks)}
         for task in validated.tasks:
             dependencies = [positions[item] for item in task.dependencies]
             recommendation = self._policy.recommend(SupervisorRecommendationRequest(instruction=task.objective, scope=request.scope, workspace=request.workspace, task_kind="research" if task.worker == "researcher" else "code" if task.worker in {"code_analyst", "supervised_coding"} else "verify" if task.worker == "verifier" else None))
-            selected_worker = task.worker if task.worker != "direct" else (recommendation.profile or "direct")
+            selected_worker = task.worker if task.worker != "direct" or request.read_only else (recommendation.profile or "direct")
             metadata = {"decomposition_key": task.key, "objective": task.objective, "expected_evidence": task.expected_evidence, "worker": selected_worker, "tool_category": task.tool_category, "verification": task.verification, "mutation_required": task.mutation_required, "depends_on_positions": dependencies, "delegation": recommendation.model_dump()}
             plan_steps.append(PlanStepCreate(title=task.title, metadata=metadata))
-        plan = self._autonomy.create_goal(PlanCreate(scope=request.scope, workspace=request.workspace, goal=request.goal, steps=plan_steps, metadata={"original_goal": request.goal, "planner": "structured", "decomposition": validated.model_dump(), "preplan_evidence": self._evidence_reference(evidence)}))
+        plan = self._autonomy.create_goal(PlanCreate(scope=request.scope, workspace=request.workspace, goal=" ".join(request.goal.split()), steps=plan_steps, metadata={"original_goal": request.goal, "read_only": request.read_only, "planner": "structured", "decomposition": validated.model_dump(), "preplan_evidence": self._evidence_reference(evidence)}))
         return validated, plan
 
     def replan(self, request: GoalRequest, previous: ProjectPlan, output: PlannerOutput) -> ProjectPlan:

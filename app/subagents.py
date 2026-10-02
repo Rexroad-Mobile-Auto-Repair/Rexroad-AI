@@ -19,11 +19,15 @@ from app.worker_routing import WorkerModelRouter
 PROFILES: dict[str, frozenset[str]] = {
     "researcher": frozenset({"filesystem.read", "workspace.repo_map", "knowledge.search", "knowledge.search_across_workspaces"}),
     "code_analyst": frozenset({"filesystem.read", "workspace.repo_map", "git.status", "git.log", "knowledge.search"}),
+    "test_analyst": frozenset({"filesystem.read", "workspace.repo_map", "git.status", "git.diff"}),
+    "architecture_analyst": frozenset({"filesystem.read", "workspace.repo_map", "git.status", "git.log"}),
+    "security_analyst": frozenset({"filesystem.read", "workspace.repo_map", "git.status", "git.diff"}),
     "verifier": frozenset({"filesystem.read", "workspace.repo_map", "git.status", "git.diff", "knowledge.search"}),
 }
 
 
 class SubAgentTaskCreate(BaseModel):
+    required_files: list[str] = Field(default_factory=list, max_length=5)
     worker_profile: str
     scope: str
     instruction: str = Field(min_length=1, max_length=4000)
@@ -35,6 +39,7 @@ class SubAgentTaskCreate(BaseModel):
 
 
 class SubAgentTask(BaseModel):
+    required_files: list[str] = Field(default_factory=list, max_length=5)
     task_id: str
     worker_profile: str
     scope: str
@@ -107,6 +112,7 @@ class DispatchAuthorization:
 
 
 class SupervisorDispatchRequest(BaseModel):
+    required_files: list[str] = Field(default_factory=list, max_length=5)
     worker_profile: str
     scope: str
     instruction: str = Field(min_length=1, max_length=4000)
@@ -182,7 +188,7 @@ class SubAgentService:
         if request.worker_profile not in PROFILES or not request.scope.strip() or not set(request.allowed_tools) <= PROFILES[request.worker_profile]:
             raise ValueError("invalid worker task")
         now = datetime.now(UTC)
-        task = SubAgentTask(task_id=str(uuid4()), worker_profile=request.worker_profile, scope=request.scope, workspace=request.workspace, instruction=request.instruction, allowed_tools=sorted(set(request.allowed_tools)), status="pending", parent_session_id=request.parent_session_id, plan_id=request.plan_id, step_id=request.step_id, created_at=now)
+        task = SubAgentTask(task_id=str(uuid4()), worker_profile=request.worker_profile, scope=request.scope, workspace=request.workspace, instruction=request.instruction, allowed_tools=sorted(set(request.allowed_tools)), required_files=request.required_files, status="pending", parent_session_id=request.parent_session_id, plan_id=request.plan_id, step_id=request.step_id, created_at=now)
         with sqlite3.connect(self._path) as db:
             db.execute("INSERT INTO sub_agent_tasks VALUES (?, ?, NULL, ?)", (task.task_id, task.model_dump_json(), now.isoformat()))
         return task
@@ -239,6 +245,29 @@ class SubAgentService:
         with sqlite3.connect(self._path) as db:
             rows = db.execute("SELECT * FROM supervisor_dispatch_audits WHERE scope=? ORDER BY created_at DESC, dispatch_id DESC LIMIT ?", (scope, limit)).fetchall()
         return [SupervisorDispatchAudit(dispatch_id=r[0], task_id=r[1], scope=r[2], workspace=r[3], recommendation_category=r[4], recommended_profile=r[5], authorized_profile=r[6], parent_session_id=r[7], plan_id=r[8], step_id=r[9], instruction_fingerprint=r[10], status=r[11], safe_reason=r[12], created_at=datetime.fromisoformat(r[13]), completed_at=datetime.fromisoformat(r[14]) if r[14] else None, tool_usage=json.loads(r[15]), mode=r[16], max_tool_calls=r[17], provider=r[18], model=r[19], routing_reason=r[20]) for r in rows]
+
+    def for_plan(self, plan_id: str, scope: str) -> list[dict]:
+        with sqlite3.connect(self._path) as db:
+            rows = db.execute("SELECT task_id, payload_json, result_json FROM sub_agent_tasks WHERE json_extract(payload_json, '$.plan_id')=? AND json_extract(payload_json, '$.scope')=? ORDER BY created_at, task_id", (plan_id, scope)).fetchall()
+        audits = {audit.task_id: audit for audit in self.audits(scope, 100)}
+        records = []
+        for task_id, payload, result in rows:
+            task = SubAgentTask.model_validate_json(payload)
+            audit = audits.get(task_id)
+            records.append({"task_id": task_id, "worker_type": task.worker_profile, "status": task.status,
+                            "summary": SubAgentResult.model_validate_json(result).summary if result else "",
+                            "files_examined": sorted({item['arguments']['relative_path'] for item in audit.tool_usage if item.get('status') == 'success' and item.get('arguments', {}).get('relative_path')}) if audit else [],
+                            "evidence_refs": [audit.dispatch_id] if audit else []})
+        return records
+
+    def source_evidence(self, scope: str, task_id: str) -> list[dict]:
+        audit = next((item for item in self.audits(scope, 100) if item.task_id == task_id), None)
+        if audit is None:
+            return []
+        return [{"path": item['arguments']['relative_path'], "text": item.get('result', '')[:500],
+                 "audit_ref": audit.dispatch_id, "truncated": len(item.get('result', '')) >= 500}
+                for item in audit.tool_usage if item.get('tool') == 'filesystem.read' and item.get('status') == 'success'
+                and item.get('arguments', {}).get('relative_path')][:10]
 
     def audit(self, dispatch_id: str, scope: str) -> SupervisorDispatchAudit | None:
         return next((item for item in self.audits(scope, 100) if item.dispatch_id == dispatch_id), None)
@@ -299,11 +328,32 @@ class SubAgentService:
         specs = [tool for tool in self._tools.specs() if any(tool.name == item.name for item in allowed)]
         messages = [ModelMessage(role="user", content=f"Worker profile: {task.worker_profile}\nScope: {task.scope}\nWorkspace: {task.workspace}\nUse the available read tools to inspect source before reporting facts. Stay in this workspace. Do not change files.\n{task.instruction[:4000]}")]
         calls = 0
+        seen_reads: set[str] = set()
+        finalize = False
         started = datetime.now(UTC)
         while calls <= max_calls:
-            response = await provider.generate(ModelRequest(model=model, messages=messages, tools=specs))
+            if calls == max_calls:
+                messages.append(ModelMessage(role="user", content="The read-tool budget is exhausted. Return your final answer using only the collected evidence. State any missing evidence; no further tools are available."))
+            response = await provider.generate(ModelRequest(model=model, messages=messages, tools=[] if calls >= max_calls or finalize else specs))
+            if response.tool_calls and finalize:
+                break
+            keys = [call.name + json.dumps(call.arguments, sort_keys=True) for call in response.tool_calls]
+            if keys and all(key in seen_reads for key in keys):
+                messages.append(ModelMessage(role="user", content="These same reads already succeeded. Use their saved results and return the final answer without further tools."))
+                finalize = True
+                continue
             if not response.tool_calls:
-                result = SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="completed", summary=str(sanitize_output(response.content))[:4000], tool_usage=[item["tool"] for item in self.audit(dispatch_id, task.scope).tool_usage] if self.audit(dispatch_id, task.scope) else [], started_at=started, completed_at=datetime.now(UTC))
+                audit = self.audit(dispatch_id, task.scope)
+                read_files = {item.get('arguments', {}).get('relative_path') for item in audit.tool_usage
+                              if item.get('tool') == 'filesystem.read' and item.get('status') == 'success'} if audit else set()
+                missing = sorted(set(task.required_files) - read_files)
+                if missing:
+                    if calls >= max_calls:
+                        break
+                    messages.append(ModelMessage(role="user", content=f"Required source evidence is missing for: {', '.join(missing)}. Read these files with filesystem.read before answering."))
+                    calls += 1  # Bound correction attempts as well as tool calls.
+                    continue
+                result = SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="completed", summary=response.content[:4000], tool_usage=[item["tool"] for item in self.audit(dispatch_id, task.scope).tool_usage] if self.audit(dispatch_id, task.scope) else [], started_at=started, completed_at=datetime.now(UTC))
                 with sqlite3.connect(self._path) as db:
                     db.execute("UPDATE sub_agent_tasks SET result_json=? WHERE task_id=?", (result.model_dump_json(), task_id))
                 return result
@@ -319,8 +369,9 @@ class SubAgentService:
                     return SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="authorization_denied", started_at=started, completed_at=datetime.now(UTC))
                 try:
                     result_value = self._tools.execute(call.name, **call.arguments)
-                    safe = sanitize_output(result_value)
+                    safe = (result_value[:16000] + ("...[truncated]" if len(result_value) > 16000 else "")) if call.name == "filesystem.read" and isinstance(result_value, str) else sanitize_output(result_value)
                     self.record_tool_usage(dispatch_id, task.scope, call.name, tool.permission, "success", safe, call.arguments)
+                    seen_reads.add(call.name + json.dumps(call.arguments, sort_keys=True))
                 except Exception:  # noqa: BLE001 - tool boundary returns safe failure
                     self.record_tool_usage(dispatch_id, task.scope, call.name, tool.permission, "error")
                     return SubAgentResult(task_id=task.task_id, worker_profile=task.worker_profile, status="failed", safe_reason="tool_error", started_at=started, completed_at=datetime.now(UTC))

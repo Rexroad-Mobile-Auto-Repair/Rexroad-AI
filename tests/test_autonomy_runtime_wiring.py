@@ -17,13 +17,16 @@ from tests.test_autonomous_team import build
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("workspace,expected", [("repo", "completed"), ("other", "failed")])
-async def test_workflow_loop_confines_workspace_and_persists_result(tmp_path, workspace, expected):
+@pytest.mark.parametrize("profile", ["researcher", "test_analyst", "architecture_analyst", "security_analyst"])
+async def test_workflow_loop_confines_workspace_and_persists_result(tmp_path, workspace, expected, profile):
     class Provider:
         name = "openai_compatible"
         count = 0
 
         async def generate(self, request):
             self.count += 1
+            if self.count > 1:
+                assert request.tools == []
             return ModelResponse(provider=self.name, model=request.model, content="Grounded answer" if self.count > 1 else "",
                                  tool_calls=[] if self.count > 1 else [ToolCall(id="c", name="filesystem.read", arguments={"workspace": workspace, "relative_path": "example.py"})])
 
@@ -33,10 +36,12 @@ async def test_workflow_loop_confines_workspace_and_persists_result(tmp_path, wo
     reads = []
     tools.register(ToolDefinition(name="filesystem.read", description="read", permission="read", handler=lambda **args: reads.append(args) or "source"))
     service = SubAgentService(tmp_path / "state.sqlite3", registry, tools, WorkerModelRouter(Settings(), registry))
-    request = SupervisorDispatchRequest(worker_profile="researcher", scope="s", workspace="repo", instruction="Research source",
+    instruction = "Research source" if profile == "researcher" else f"Inspect code as {profile}: review source"
+    request = SupervisorDispatchRequest(worker_profile=profile, scope="s", workspace="repo", instruction=instruction,
                                         mode="provider_loop", max_tool_calls=1, allowed_tools=["filesystem.read"])
     result = await service.dispatch(request, service.authorize_dispatch(request))
     assert result.status == expected
+    assert result.worker_profile == profile
     assert service.get(result.task_id)[1].status == expected
     assert service.get(result.task_id)[0].status == expected
     assert len(reads) == (1 if workspace == "repo" else 0)
@@ -60,7 +65,8 @@ def test_routing_rechecks_after_dependency_and_persists_synthesis(tmp_path):
     assert result["team"]["status"] == "completed"
     team = teams.get_for_plan(plan.id, "s")
     assert len(team["metadata"]["worker_results"]) == 2
-    assert team["metadata"]["synthesis"]["requires_more_work"] is False
+    assert team["metadata"]["synthesis"]["reconciliation_status"] == "pending"
+    assert team["metadata"]["synthesis"]["requires_more_work"] is True
     repeated = continuation.continue_routed(plan_id=plan.id, scope="s", bridge=bridge, teams=teams, authorizations={})
     assert repeated["team"]["team_id"] == team["team_id"]
     assert repeated["execution"]["attempted"] == []
@@ -121,3 +127,40 @@ def test_proposal_preview_resolves_workflow_id_and_preserves_scope(monkeypatch):
         assert response.status_code == 200
         assert response.json()["proposal_id"] == "proposal-123"
         assert client.get("/supervisor-coding-workflows/workflow-456/proposal/preview", params={"scope": "other"}).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_required_files_are_read_before_worker_can_complete(tmp_path):
+    class Provider:
+        name = 'openai_compatible'
+        count = 0
+
+        async def generate(self, request):
+            self.count += 1
+            if self.count == 1:
+                return ModelResponse(provider=self.name, model=request.model, content='Premature answer')
+            if self.count == 2:
+                assert 'Required source evidence is missing' in request.messages[-1].content
+                return ModelResponse(provider=self.name, model=request.model, tool_calls=[
+                    ToolCall(id='first', name='filesystem.read', arguments={'workspace':'repo','relative_path':'example.py'}),
+                    ToolCall(id='second', name='filesystem.read', arguments={'workspace':'repo','relative_path':'test_example.py'}),
+                ])
+            if self.count == 3:
+                assert 'SOURCE_TAIL' in request.messages[-1].content
+                return ModelResponse(provider=self.name, model=request.model, tool_calls=[ToolCall(id='repeat', name='filesystem.read', arguments={'workspace':'repo','relative_path':'example.py'})])
+            assert request.tools == []
+            return ModelResponse(provider=self.name, model=request.model, content='Both sources reviewed.' + 'x' * 2100)
+
+    providers = ProviderRegistry()
+    provider = Provider()
+    providers.register(provider)
+    tools = ToolRegistry()
+    tools.register(ToolDefinition(name='filesystem.read', description='read', permission='read', handler=lambda **args: 'source' + 'x' * 2500 + 'SOURCE_TAIL'))
+    service = SubAgentService(tmp_path / 'state.sqlite3', providers, tools, WorkerModelRouter(Settings(), providers))
+    request = SupervisorDispatchRequest(worker_profile='test_analyst', scope='s', workspace='repo', instruction='Inspect code as test_analyst: review both files', required_files=['example.py','test_example.py'], mode='provider_loop', max_tool_calls=5, allowed_tools=['filesystem.read'])
+    result = await service.dispatch(request, service.authorize_dispatch(request))
+    assert result.status == 'completed'
+    assert len(result.summary) > 2000 and result.summary.endswith('x')
+    assert {item['path'] for item in service.source_evidence('s', result.task_id)} == set(request.required_files)
+    assert provider.count == 4
+    assert len(service.audits('s')[0].tool_usage) == 2

@@ -18,6 +18,7 @@ from app.journal.models import (
 
 class ActionJournal:
     EVENT_CONTENT_LIMIT = 2000
+    CHAT_CONTENT_LIMIT = 12000
 
     @staticmethod
     def _session_title(connection: sqlite3.Connection, session_id: str) -> str:
@@ -213,7 +214,7 @@ class ActionJournal:
             event_type=event_type,
             action_id=action_id,
             tool_call_id=tool_call_id,
-            payload=self._bounded_payload(payload or {}),
+            payload=self._bounded_payload(payload or {}, event_type=event_type),
             created_at=datetime.now(UTC),
         )
         with self._connect() as connection:
@@ -255,11 +256,14 @@ class ActionJournal:
         ]
 
     @classmethod
-    def _bounded_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+    def _bounded_payload(cls, payload: dict[str, Any], *, event_type: EventType | None = None) -> dict[str, Any]:
         safe: dict[str, Any] = {}
         for key, value in payload.items():
             if isinstance(value, str):
-                safe[key] = value[: cls.EVENT_CONTENT_LIMIT]
+                if key == "content" and event_type in ("user_request", "final_response"):
+                    safe[key] = value[: cls.CHAT_CONTENT_LIMIT]
+                else:
+                    safe[key] = value[: cls.EVENT_CONTENT_LIMIT]
             elif key == "preserved_messages" and isinstance(value, list):
                 safe[key] = [
                     {k: str(v)[: cls.EVENT_CONTENT_LIMIT] for k, v in item.items()}

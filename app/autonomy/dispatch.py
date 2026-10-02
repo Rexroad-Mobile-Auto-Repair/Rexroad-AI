@@ -19,6 +19,10 @@ class PlannedWorkerDispatcher:
         if spec.worker == "supervised_coding":
             if self._coding is None:
                 return {"status": "waiting_for_unavailable_worker", "reason": "supervised coding workflow unavailable"}
+            team = self._teams.get_for_plan(spec.plan_id, spec.scope) if self._teams else None
+            teams = self._teams.list_for_plan(spec.plan_id, spec.scope) if self._teams and hasattr(self._teams, "list_for_plan") else ([team] if team else [])
+            if any(item["metadata"].get("synthesis", {}).get("requires_more_work") for item in teams):
+                return {"status": "waiting_for_findings_resolution", "reason": "Team findings contain unresolved evidence or disagreement"}
             existing = next((item for item in self._coding.list(spec.scope, spec.workspace, 100) if item.parent_plan_id == spec.plan_id and item.parent_step_id == spec.step_id), None) if hasattr(self._coding, "list") else None
             if existing is not None:
                 return {"status": self._coding_status(existing.status), "workflow_id": existing.workflow_id, "workflow_status": existing.status}

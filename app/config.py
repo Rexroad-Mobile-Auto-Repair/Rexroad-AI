@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     seo_crawler_workspace: str = r"D:\Rexroad-SEO-Crawler"
     acceptance_test_workspace: str = r"D:\Rexroad-AI-Test"
+    rexroad_ai_journal_workspace: str = r"D:\Rexroad-AI\app\journal"
     knowledge_workspace: str = r"D:\Rexroad-AI-Knowledge"
 
     action_journal_path: str = "data/action_journal.sqlite3"

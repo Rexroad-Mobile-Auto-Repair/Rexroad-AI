@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
-from app.autonomy.synthesis import from_subagent
+from app.autonomy.synthesis import SourceExcerpt, from_subagent
 from app.plans.service import PlanService
 from app.subagents import SubAgentService, SupervisorDispatchRequest
 
@@ -22,11 +23,17 @@ class PlannedAnalysis:
             raise ValueError("not a specialized analysis task")
         if not self._agents.provider_backed:
             raise ValueError("provider-backed analysis unavailable")
+        required_files = []
+        if re.search(r"\b(both|each|all)\b.*\b(read|inspect)\b", plan.goal, re.IGNORECASE):
+            required_files = list(dict.fromkeys(re.findall(r"[\w./-]+\.(?:py|php|js|ts|tsx|jsx|html|css|json|md)\b", plan.goal)))
+            if len(required_files) > 5:
+                raise ValueError("shared source review exceeds the bounded worker budget")
         request = SupervisorDispatchRequest(
-            worker_profile="code_analyst", scope=scope, workspace=workspace,
-            instruction=f"Inspect code as {role}: {step.metadata.get('objective', step.title)}\nExpected evidence: {step.metadata.get('expected_evidence', '')}"[:4000],
+            worker_profile=role, scope=scope, workspace=workspace,
+            instruction=f"Inspect code as {role}: {step.metadata.get('objective', step.title)}\nExpected evidence: {step.metadata.get('expected_evidence', '')}\nReport only this assigned analysis with source citations. Do not create plans, teams or task IDs. Judge gaps against the actual documented contract; distinguish optional tests from missing required behavior.\nShared review requirements: {plan.goal}"[:4000],
+            required_files=required_files,
             plan_id=plan_id, step_id=step_id,
-            **self._agents.workflow_options("code_analyst"),
+            **self._agents.workflow_options(role),
         )
         result = asyncio.run(self._agents.dispatch(request, self._agents.authorize_dispatch(request)))
         audits = [item for item in self._agents.audits(scope, 100) if item.task_id == result.task_id]
@@ -36,4 +43,5 @@ class PlannedAnalysis:
         contract.worker_type = role
         contract.findings = [contract.summary] if contract.summary else []
         contract.files_examined = sorted({item["arguments"]["relative_path"] for item in audits[0].tool_usage if item.get("status") == "success" and item.get("arguments", {}).get("relative_path")})[:50]
+        contract.source_evidence = [SourceExcerpt.model_validate(item) for item in self._agents.source_evidence(scope, result.task_id)]
         return contract.model_dump()

@@ -15,7 +15,7 @@ class WorkerModelRouter:
         self._settings, self._providers = settings, providers
 
     def resolve(self, profile: str) -> WorkerRoute:
-        if profile not in {"researcher", "code_analyst", "verifier"}:
+        if profile not in {"researcher", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst", "verifier"}:
             raise ValueError("unknown worker profile")
         provider = self._settings.default_provider
         if provider not in self._providers.names():

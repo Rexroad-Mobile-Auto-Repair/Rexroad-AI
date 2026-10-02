@@ -16,10 +16,11 @@ class AutonomousTeamCoordinator:
 
     MAX_MEMBERS = 4
 
-    def __init__(self, database_path: str | Path, plans: PlanService, continuation: Any) -> None:
+    def __init__(self, database_path: str | Path, plans: PlanService, continuation: Any, reconciler: Any = None) -> None:
         self._path = Path(database_path)
         self._plans = plans
         self._continuation = continuation
+        self._reconciler = reconciler
         with sqlite3.connect(self._path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS autonomous_teams (team_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, scope TEXT NOT NULL, workspace TEXT, status TEXT NOT NULL, members_json TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)")
 
@@ -71,6 +72,22 @@ class AutonomousTeamCoordinator:
             row = db.execute("SELECT team_id FROM autonomous_teams WHERE plan_id=? AND scope=? ORDER BY created_at DESC LIMIT 1", (plan_id, scope)).fetchone()
         return self.get(row[0], scope) if row else None
 
+    def list_for_plan(self, plan_id: str, scope: str) -> list[dict[str, Any]]:
+        with sqlite3.connect(self._path) as db:
+            rows = db.execute("SELECT team_id FROM autonomous_teams WHERE plan_id=? AND scope=? ORDER BY created_at, team_id", (plan_id, scope)).fetchall()
+        return [team for row in rows if (team := self.get(row[0], scope)) is not None]
+
+    def reconcile_saved(self, team_id: str, scope: str) -> dict[str, Any]:
+        team = self.get(team_id, scope)
+        if team is None or team["status"] not in {"completed", "failed"} or self._reconciler is None:
+            raise ValueError("saved team comparison unavailable")
+        metadata = team["metadata"]
+        results = [WorkerResultContract.model_validate(item) for item in metadata.get("worker_results", [])]
+        metadata["synthesis"] = self._reconciler.reconcile(results, scope=scope).model_dump()
+        with sqlite3.connect(self._path) as db:
+            db.execute("UPDATE autonomous_teams SET metadata_json=? WHERE team_id=? AND scope=?", (json.dumps(metadata), team_id, scope))
+        return self.get(team_id, scope)
+
     def run(self, team_id: str, scope: str, bridge: Any, authorizations: dict[str, Any], max_steps: int = 1) -> dict[str, Any]:
         team = self.get(team_id, scope)
         if team is None:
@@ -95,7 +112,8 @@ class AutonomousTeamCoordinator:
                 contract = WorkerResultContract(worker_type=item["worker"], task_id=item["step_id"], status=item["status"], summary=item.get("failure_reason", "Read-only plan execution completed."), evidence_refs=[item["trace_id"]] if item.get("trace_id") else [])
             contracts[contract.task_id] = contract.model_dump()
         metadata["worker_results"] = list(contracts.values())
-        metadata["synthesis"] = synthesize([WorkerResultContract.model_validate(item) for item in contracts.values()]).model_dump()
+        worker_results = [WorkerResultContract.model_validate(item) for item in contracts.values()]
+        metadata["synthesis"] = (self._reconciler.reconcile(worker_results, scope=scope) if self._reconciler else synthesize(worker_results)).model_dump()
         completed_at = datetime.now(UTC).isoformat() if status == "completed" else None
         with sqlite3.connect(self._path) as db:
             db.execute("UPDATE autonomous_teams SET status=?, members_json=?, metadata_json=?, completed_at=? WHERE team_id=? AND scope=?", (status, json.dumps(members), json.dumps(metadata), completed_at, team_id, scope))
