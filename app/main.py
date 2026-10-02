@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,7 @@ from app.supervisor_workflows import (
     ResearchVerifyWorkflowResult,
     SupervisorResearchVerifyWorkflow,
 )
+from app.tools.code_search import WorkspaceCodeSearch
 from app.tools.factory import build_tool_registry
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
@@ -133,6 +134,7 @@ OPERATOR_HTML = """<!doctype html>
 <header><h1>Rexroad AI</h1><p class="muted">Explicit supervisor control panel. Every action requires a separate click.</p></header>
 <section class="toolbar"><label>Workspace <select id="workspace"></select></label><label>Scope <input id="scope" value="operator" maxlength="200"></label><button id="refresh">Refresh</button><span id="error" class="error"></span></section>
 <section class="grid"><div class="card"><h2>Project</h2><div id="project" class="muted">Select a workspace.</div></div><div class="card"><h2>Needs Attention</h2><div id="attention" class="muted">None.</div></div></section>
+<section class="card"><h2>Search project</h2><p class="muted">Find source files or matching text in the selected workspace. Search text is literal.</p><label>Text to find <input id="search-text" maxlength="200" aria-label="Text to find" placeholder="Function name or text"></label><label>File filter <input id="search-pattern" maxlength="200" aria-label="File filter" value="**/*" placeholder="For example *.py or *.php"></label><button id="search-submit">Search text</button><button id="find-files">Find files</button><p id="search-status" aria-live="polite"></p><div id="search-results"></div></section>
 <section class="card"><h2>New supervised coding task</h2><input id="objective" maxlength="4000" size="60" placeholder="Describe the coding objective"><button id="create">Create coding workflow</button></section>
 <section class="card"><h2>Coding Jobs</h2><div id="jobs" class="muted">None.</div></section>
 <section class="card"><h2>Recent Activity</h2><div id="activity" class="muted">None.</div></section>
@@ -183,6 +185,7 @@ knowledge_service = KnowledgeService(
     max_document_chunks=settings.knowledge_max_document_chunks,
 )
 navigator = WorkspaceNavigator(workspace_registry, KnowledgeStore(settings.knowledge_index_path))
+code_search = WorkspaceCodeSearch(workspace_registry)
 cross_workspace_service = CrossWorkspaceKnowledgeService(workspace_registry, knowledge_service)
 action_journal = ActionJournal(
     settings.action_journal_path
@@ -312,7 +315,7 @@ async def list_skills(workspace: str | None = None) -> list[dict[str, object]]:
 async def operator_page() -> HTMLResponse:
     shell = OPERATOR_HTML.split("</main>", 1)[0]
     shell = shell.replace("</style>", "input,select,pre{max-width:100%;box-sizing:border-box}pre{overflow:auto;white-space:pre-wrap}button:disabled{opacity:.5;cursor:default}</style>")
-    return HTMLResponse(shell + '<script src="/operator-controls.js"></script></main></body></html>')
+    return HTMLResponse(shell + '<script src="/operator-controls.js"></script><script src="/project-search.js"></script></main></body></html>')
 
 
 @app.get("/chat", response_class=HTMLResponse)
@@ -570,10 +573,29 @@ async def operator_controls() -> FileResponse:
     return FileResponse(Path(__file__).parent / "static" / "operator-controls.js", media_type="text/javascript")
 
 
+@app.get("/project-search.js")
+async def project_search_controls() -> FileResponse:
+    return FileResponse(Path(__file__).parent / "static" / "project-search.js", media_type="text/javascript")
+
+
+@app.get("/workspaces/{workspace}/search")
+def search_workspace(workspace: str, query: str = Query(default="", max_length=200), pattern: str = Query(default="**/*", min_length=1, max_length=200), limit: int = Query(default=20, ge=1, le=50)) -> dict:
+    try:
+        if query:
+            return code_search.grep(workspace, query, pattern=pattern, limit=limit)
+        return code_search.glob(workspace, pattern=pattern, limit=limit)
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="The selected workspace or search folder is unavailable") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
 _STREAM_TOOL_LABELS = {
     "filesystem.list": "Inspecting project files",
     "filesystem.read": "Reading project files",
     "filesystem.search": "Searching project files",
+    "filesystem.glob": "Finding project files",
+    "filesystem.grep": "Finding matching source lines",
     "git.status": "Checking Git status",
     "git.log": "Reading Git history",
     "knowledge.search": "Searching project knowledge",

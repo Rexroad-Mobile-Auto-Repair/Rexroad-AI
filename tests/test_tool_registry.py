@@ -127,6 +127,8 @@ def test_build_tool_registry_contains_expected_tools(
 
     assert registry.names() == [
         "filesystem.apply_patch",
+        "filesystem.glob",
+        "filesystem.grep",
         "filesystem.list",
         "filesystem.read",
         "filesystem.search",

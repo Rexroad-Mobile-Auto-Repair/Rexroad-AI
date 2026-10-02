@@ -142,3 +142,34 @@ Start-RexroadAI.ps1. The workflow and reports are saved in scope followup-reliab
 A separate normal-provider/API completeness probe rejected a proposal omitting
 the requested test file before saving a proposal or creating any execution trace.
 That probe was cancelled after verification; it granted no file approval.
+
+## Clawd-Code project search integration
+
+The first donor feature is file finding and literal source search. Small traversal
+and filename-matching helpers were adapted from
+Clawd-Code-main/src/tool_system/tools/grep.py in the supplied archive, with
+glob.py reviewed for the file-finding interface. The archive SHA256 is
+1b5fdb379cf6c983f4e1fc0e3b434e658cac7622f0017759c87ad7e0acb33e6d.
+The original MIT notice is retained in third_party/clawd_code/LICENSE;
+app/tools/code_search.py identifies the adaptation. No donor framework or
+runtime was imported, and this feature adds no dependency.
+
+The operator panel's Search project card provides Search text and Find files.
+Normal agents and read-only analyst profiles also receive filesystem.grep and
+filesystem.glob through the existing registry, permission checks, and journal.
+GET /workspaces/{workspace}/search uses the same implementation. Search stays
+inside existing registered workspace roots and does not approve or modify files.
+
+Results include workspace-relative filenames, source line numbers, and bounded
+context. This milestone searches literal text, not regular expressions. A file
+filter such as *.py narrows the scan. Generated directories, environment files,
+credential-named files, symbolic links, binary files, and oversized files are
+excluded. Limits cover results, scan time, visited files, read bytes, and content
+output; partial results are identified. Search excerpts do not replace reading
+the complete source before analysis or editing. Existing filesystem.search remains.
+
+Normal LM Studio/provider acceptance in session
+c810f541-c6a8-4fbe-bf12-20a92922a72e successfully journaled filesystem.glob,
+filesystem.grep, and filesystem.read in acceptance_test and cited greeting's
+declaration at example.py line 1. The visible operator search independently found
+_filter_form in seo_crawler at app/reports/html_view.py line 96.

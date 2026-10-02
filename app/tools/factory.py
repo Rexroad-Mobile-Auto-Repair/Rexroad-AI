@@ -5,6 +5,7 @@ from app.memory.service import MemoryService
 from app.navigation.service import WorkspaceNavigator
 from app.plans.service import PlanService
 from app.tools.checks import WorkspaceChecks
+from app.tools.code_search import WorkspaceCodeSearch
 from app.tools.commands import CommandRunner
 from app.tools.filesystem import ReadOnlyFilesystem
 from app.tools.git import ReadOnlyGit
@@ -25,6 +26,10 @@ def build_tool_registry(
     navigator: WorkspaceNavigator | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(database_path)
+    search = WorkspaceCodeSearch(filesystem.workspaces)
+    search_parameters = {"workspace": {"type": "string"}, "pattern": {"type": "string", "maxLength": 200, "default": "**/*"}, "relative_path": {"type": "string", "default": "."}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}
+    registry.register(ToolDefinition(name="filesystem.glob", description="Find source and text files by filename or workspace-relative wildcard pattern, such as *.php or **/test_*.py. Read-only and bounded; excludes environments, generated files, links and private key artifacts.", permission="read", handler=search.glob, parameters={"type": "object", "properties": search_parameters, "required": ["workspace"], "additionalProperties": False}))
+    registry.register(ToolDefinition(name="filesystem.grep", description="Search literal text and return matching source lines, line numbers and nearby context. Use query for text and pattern for filename filters. Results are bounded; read the file before editing or making full-source claims.", permission="read", handler=search.grep, parameters={"type": "object", "properties": {**search_parameters, "query": {"type": "string", "minLength": 1, "maxLength": 200}, "ignore_case": {"type": "boolean", "default": True}, "context": {"type": "integer", "minimum": 0, "maximum": 2}}, "required": ["workspace", "query"], "additionalProperties": False}))
     if navigator is not None:
         registry.register(ToolDefinition(
             name="workspace.repo_map",

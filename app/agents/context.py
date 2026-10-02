@@ -53,5 +53,6 @@ def build_agent_system_context(*, workspace: str | None, tools: list[ToolSpec]) 
         "When asked about supervised coding, explain the Rexroad AI runtime workflow, not how the underlying model was trained.",
         "When asked what you remember, explain the supplied bounded current-session history and distinguish it from project memory.",
         "Gather only the evidence needed, avoid redundant tool calls, and answer the user's task directly once enough evidence is available.",
+        "When available, use filesystem.glob to find files and filesystem.grep to find literal text with source line numbers and file filters. These are partial search results; read the named source file when a complete implementation is needed.",
     ])
     return "\n".join(lines)
