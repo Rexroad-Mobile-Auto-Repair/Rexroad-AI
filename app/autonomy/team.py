@@ -16,11 +16,12 @@ class AutonomousTeamCoordinator:
 
     MAX_MEMBERS = 4
 
-    def __init__(self, database_path: str | Path, plans: PlanService, continuation: Any, reconciler: Any = None) -> None:
+    def __init__(self, database_path: str | Path, plans: PlanService, continuation: Any, reconciler: Any = None, result_loader: Any = None) -> None:
         self._path = Path(database_path)
         self._plans = plans
         self._continuation = continuation
         self._reconciler = reconciler
+        self._result_loader = result_loader
         with sqlite3.connect(self._path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS autonomous_teams (team_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, scope TEXT NOT NULL, workspace TEXT, status TEXT NOT NULL, members_json TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)")
 
@@ -88,6 +89,28 @@ class AutonomousTeamCoordinator:
             db.execute("UPDATE autonomous_teams SET metadata_json=? WHERE team_id=? AND scope=?", (json.dumps(metadata), team_id, scope))
         return self.get(team_id, scope)
 
+    def restore_completed(self, plan_id: str, scope: str) -> None:
+        plan = self._plans.get(plan_id, scope)
+        if plan is None:
+            raise ValueError("plan not found")
+        saved = self._result_loader(plan_id, scope) if self._result_loader else []
+        completed = {step.id: step for step in plan.steps if step.status == "completed"}
+        for team in self.list_for_plan(plan_id, scope):
+            if team["status"] != "active":
+                continue
+            contracts = {item["task_id"]: item for item in team["metadata"].get("worker_results", [])}
+            task_ids = {step_id for member in team["members"] for step_id in member["task_ids"]}
+            for member in team["members"]:
+                if all(step_id in completed for step_id in member["task_ids"]):
+                    member["status"] = "completed"
+                    member["result_refs"] = [completed[step_id].reference for step_id in member["task_ids"] if completed[step_id].reference]
+            for item in saved:
+                if item["step_id"] in task_ids and item["step_id"] in completed:
+                    contracts[item["contract"]["task_id"]] = item["contract"]
+            team["metadata"]["worker_results"] = list(contracts.values())
+            with sqlite3.connect(self._path) as db:
+                db.execute("UPDATE autonomous_teams SET members_json=?, metadata_json=? WHERE team_id=? AND scope=?", (json.dumps(team["members"]), json.dumps(team["metadata"]), team["team_id"], scope))
+
     def run(self, team_id: str, scope: str, bridge: Any, authorizations: dict[str, Any], max_steps: int = 1) -> dict[str, Any]:
         team = self.get(team_id, scope)
         if team is None:
@@ -113,8 +136,14 @@ class AutonomousTeamCoordinator:
             contracts[contract.task_id] = contract.model_dump()
         metadata["worker_results"] = list(contracts.values())
         worker_results = [WorkerResultContract.model_validate(item) for item in contracts.values()]
-        metadata["synthesis"] = (self._reconciler.reconcile(worker_results, scope=scope) if self._reconciler else synthesize(worker_results)).model_dump()
+        # Persist worker outcomes before optional provider-backed comparison.
+        # A restart during reconciliation must not lose completed evidence.
+        metadata["synthesis"] = synthesize(worker_results).model_dump()
         completed_at = datetime.now(UTC).isoformat() if status == "completed" else None
         with sqlite3.connect(self._path) as db:
             db.execute("UPDATE autonomous_teams SET status=?, members_json=?, metadata_json=?, completed_at=? WHERE team_id=? AND scope=?", (status, json.dumps(members), json.dumps(metadata), completed_at, team_id, scope))
+        if self._reconciler:
+            metadata["synthesis"] = self._reconciler.reconcile(worker_results, scope=scope).model_dump()
+            with sqlite3.connect(self._path) as db:
+                db.execute("UPDATE autonomous_teams SET metadata_json=? WHERE team_id=? AND scope=?", (json.dumps(metadata), team_id, scope))
         return {"team": self.get(team_id, scope), "execution": result}

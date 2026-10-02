@@ -111,7 +111,10 @@ class ChatPlannedReview:
                         self._autonomy.cancel(plan.id, scope)
                 return self._format(plan, findings=False)
             if operation in {"create-run", "start", "continue"} and plan.status == "active":
-                await asyncio.to_thread(self._resume, plan.id, scope)
+                try:
+                    await asyncio.to_thread(self._resume, plan.id, scope)
+                except ValueError as exc:
+                    return f"Resume stopped: {str(exc)[:300]}\n\n" + self._format(plan, findings=False)
             return self._format(plan, findings=operation in {"create-run", "start"})
 
     def _select(self, argument: str, workspace: str, scope: str) -> ProjectPlan | None:

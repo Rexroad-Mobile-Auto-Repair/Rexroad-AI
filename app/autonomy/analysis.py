@@ -45,3 +45,15 @@ class PlannedAnalysis:
         contract.files_examined = sorted({item["arguments"]["relative_path"] for item in audits[0].tool_usage if item.get("status") == "success" and item.get("arguments", {}).get("relative_path")})[:50]
         contract.source_evidence = [SourceExcerpt.model_validate(item) for item in self._agents.source_evidence(scope, result.task_id)]
         return contract.model_dump()
+
+    def saved_results(self, plan_id: str, scope: str) -> list[dict]:
+        records = []
+        for item in self._agents.for_plan(plan_id, scope):
+            task, result = self._agents.get(item["task_id"])
+            if result is None or result.status != "completed":
+                continue
+            contract = from_subagent(result, item["evidence_refs"])
+            contract.files_examined = item["files_examined"]
+            contract.source_evidence = [SourceExcerpt.model_validate(e) for e in self._agents.source_evidence(scope, task.task_id)]
+            records.append({"step_id": task.step_id, "contract": contract.model_dump()})
+        return records

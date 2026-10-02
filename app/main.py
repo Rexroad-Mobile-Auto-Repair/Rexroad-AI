@@ -222,7 +222,7 @@ coding_action_service = SupervisorCodingActionService(coding_job_service, coding
 coding_guidance_service = CodingGuidanceService(coding_job_service)
 supervisor_workflow_service = SupervisorResearchVerifyWorkflow(settings.action_journal_path, sub_agent_service)
 research_action_service = ResearchWorkflowActionService(supervisor_workflow_service)
-team_coordinator = AutonomousTeamCoordinator(settings.action_journal_path, plan_service, autonomy_service, TeamReconciler(settings, provider_registry, sub_agent_service.source_evidence))
+team_coordinator = AutonomousTeamCoordinator(settings.action_journal_path, plan_service, autonomy_service, TeamReconciler(settings, provider_registry, sub_agent_service.source_evidence), result_loader=lambda plan_id, scope: planned_analysis.saved_results(plan_id, scope))
 planned_analysis = PlannedAnalysis(plan_service, sub_agent_service)
 tool_registry.register(ToolDefinition(name="autonomy.analyze", description="Internal scoped planned analysis", permission="read", handler=planned_analysis.run, internal=True))
 planned_worker_dispatcher = PlannedWorkerDispatcher(coding=coding_workflow_service, research=supervisor_workflow_service, teams=team_coordinator)

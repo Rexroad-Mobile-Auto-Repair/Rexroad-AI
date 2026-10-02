@@ -4,6 +4,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Lock
 from typing import Any
 
 from app.plans.continuation import StepExecutionSpec
@@ -25,6 +26,8 @@ class AutonomousContinuationService:
     def __init__(self, plans: PlanService, executor: PlanExecutionCoordinator) -> None:
         self._plans = plans
         self._executor = executor
+        self._active_plans: set[tuple[str, str]] = set()
+        self._active_lock = Lock()
 
     def create_goal(self, request: PlanCreate, bounds: ContinuationBounds | None = None) -> ProjectPlan:
         chosen = bounds or ContinuationBounds()
@@ -141,6 +144,25 @@ class AutonomousContinuationService:
         return {"team": team, "execution": self.continue_with_bridge(plan_id=plan_id, scope=scope, bridge=bridge, authorizations=authorizations, max_steps=max_steps)}
 
     def continue_routed(self, *, plan_id: str, scope: str, bridge: Any, teams: Any, authorizations: dict[str, Any], max_steps: int = 10) -> dict[str, Any]:
+        if max_steps < 1 or max_steps > 50:
+            raise ValueError("invalid max_steps")
+        key = (plan_id, scope)
+        with self._active_lock:
+            if key in self._active_plans:
+                return {"plan_id": plan_id, "attempted": [], "completed": [], "waiting": "already_running", "state": self.inspect(plan_id, scope)}
+            self._active_plans.add(key)
+        try:
+            plan = self._require(plan_id, scope)
+            if plan.status == "active" and plan.metadata.get("read_only") is True and any(s.status == "in_progress" for s in plan.steps):
+                self._plans.recover_read_only(plan_id, scope)
+                if hasattr(teams, "restore_completed"):
+                    teams.restore_completed(plan_id, scope)
+            return self._continue_routed(plan_id=plan_id, scope=scope, bridge=bridge, teams=teams, authorizations=authorizations, max_steps=max_steps)
+        finally:
+            with self._active_lock:
+                self._active_plans.discard(key)
+
+    def _continue_routed(self, *, plan_id: str, scope: str, bridge: Any, teams: Any, authorizations: dict[str, Any], max_steps: int = 10) -> dict[str, Any]:
         """Re-evaluate routing after each step or independent team batch."""
         if max_steps < 1 or max_steps > 50:
             raise ValueError("invalid max_steps")
@@ -152,7 +174,9 @@ class AutonomousContinuationService:
             before = self.inspect(plan_id, scope)
             if before["plan_status"] != "active":
                 break
-            if self._has_concurrent_read_only_tasks(plan_id=plan_id, scope=scope, bridge=bridge, authorizations=authorizations):
+            existing_team = teams.get_for_plan(plan_id, scope)
+            assigned = {task_id for member in existing_team.get("members", []) for task_id in member["task_ids"]} if existing_team and existing_team["status"] == "active" else set()
+            if assigned.intersection(before["ready"]) or self._has_concurrent_read_only_tasks(plan_id=plan_id, scope=scope, bridge=bridge, authorizations=authorizations):
                 routed = self.continue_with_team(plan_id=plan_id, scope=scope, bridge=bridge, teams=teams, authorizations=authorizations, max_steps=1)
                 team = routed["team"]
                 execution = routed["execution"]

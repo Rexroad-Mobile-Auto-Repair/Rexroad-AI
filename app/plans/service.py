@@ -80,6 +80,41 @@ class PlanService:
             self._replace(connection, plan)
             return plan
 
+    def recover_read_only(self, plan_id: str, scope: str) -> ProjectPlan:
+        """Explicitly resume abandoned analysis; never rearm mutation work."""
+        with sqlite3.connect(self._database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            plan = self._read_plan(connection, plan_id, scope)
+            if plan is None or plan.status != "active" or plan.metadata.get("read_only") is not True:
+                raise ValueError("recovery requires an active explicitly read-only plan")
+            for step in plan.steps:
+                if (step.metadata.get("mutation_required") is not False
+                    or step.metadata.get("worker") not in {"direct", "code_analyst", "test_analyst", "architecture_analyst", "security_analyst"}
+                    or step.metadata.get("tool_category") not in {"read", "repo_map", "navigation", "git_status", "filesystem_read"}):
+                    raise ValueError("recovery cannot rearm mutation or unknown work")
+            interrupted = [step for step in plan.steps if step.status == "in_progress"]
+            if any(int(step.metadata.get("recovery_count", 0)) >= 1 for step in interrupted):
+                raise ValueError("interruption retry limit reached; inspect saved records")
+            now = datetime.now(UTC)
+            for step in interrupted:
+                step.metadata.setdefault("interrupted_attempts", []).append({"started_at": step.started_at.isoformat() if step.started_at else None,
+                                                                           "reference": step.reference, "recovered_at": now.isoformat()})
+                step.metadata["recovery_count"] = int(step.metadata.get("recovery_count", 0)) + 1
+                step.status, step.started_at, step.completed_at, step.reference = "pending", None, None, None
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if interrupted and "sub_agent_tasks" in tables:
+                for task_id, payload in connection.execute("SELECT task_id, payload_json FROM sub_agent_tasks WHERE json_extract(payload_json, '$.plan_id')=? AND json_extract(payload_json, '$.scope')=?", (plan_id, scope)).fetchall():
+                    task = json.loads(payload)
+                    if task.get("status") == "running" and task.get("step_id") in {step.id for step in interrupted}:
+                        task.update(status="failed", completed_at=now.isoformat())
+                        connection.execute("UPDATE sub_agent_tasks SET payload_json=? WHERE task_id=?", (json.dumps(task), task_id))
+                        if "supervisor_dispatch_audits" in tables:
+                            connection.execute("UPDATE supervisor_dispatch_audits SET status='failed', safe_reason='interrupted_runtime', completed_at=? WHERE task_id=? AND scope=? AND completed_at IS NULL", (now.isoformat(), task_id, scope))
+            if interrupted:
+                plan.updated_at = now
+                self._replace(connection, plan)
+            return plan
+
     def cancel(self, plan_id: str, scope: str | None = None) -> ProjectPlan | None:
         with sqlite3.connect(self._database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
