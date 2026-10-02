@@ -3,9 +3,10 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from app.agents.models import AgentQueryRequest, AgentQueryResponse
 from app.agents.planned_review import ChatPlannedReview
@@ -135,17 +136,7 @@ OPERATOR_HTML = """<!doctype html>
 <section class="card"><h2>New supervised coding task</h2><input id="objective" maxlength="4000" size="60" placeholder="Describe the coding objective"><button id="create">Create coding workflow</button></section>
 <section class="card"><h2>Coding Jobs</h2><div id="jobs" class="muted">None.</div></section>
 <section class="card"><h2>Recent Activity</h2><div id="activity" class="muted">None.</div></section>
-<script>
-const $=id=>document.getElementById(id); let selected=null;
-function safe(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
-async function api(url,options){const r=await fetch(url,options);let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||'Request failed');return d;}
-async function loadWorkspaces(){const ws=await api('/workspaces');$('workspace').innerHTML=ws.map(x=>`<option value="${safe(x.name)}">${safe(x.name)}</option>`).join('');if(ws.length)load();}
-function params(){return new URLSearchParams({scope:$('scope').value.trim(),workspace:$('workspace').value});}
-async function load(){if(!$('workspace').value)return;try{const p=params(),d=await api('/supervisor/dashboard?'+p);$('project').innerHTML=`<b>${safe(d.project.workspace)}</b> · ${safe(d.project.branch||'no Git branch')} · ${d.project.clean===true?'clean':'dirty/unavailable'}<br>HEAD ${safe(d.project.head||'unavailable')}`;$('attention').innerHTML=d.attention.length?d.attention.map(x=>`<div class="attention ${safe(x.category)}"><b>${safe(x.category)}</b> · ${safe(x.headline)}<br>${safe(x.reason)}<br><span class="muted">${safe(x.next_action||'No action')}</span></div>`).join(''):'<span class="muted">Nothing requires attention.</span>';$('jobs').innerHTML=d.coding.length?d.coding.map(x=>`<div class="attention"><b>${safe(x.workflow_id)}</b> · ${safe(x.status)}<br>${safe(x.guidance_headline)}<br>${safe(x.blocking_reason||'')}<br><span class="files">${x.affected_resources.map(safe).join('\n')}</span><br><button data-job="${safe(x.workflow_id)}">Open guidance</button></div>`).join(''):'<span class="muted">No coding jobs.</span>';$('activity').innerHTML=d.recent_activity.length?d.recent_activity.map(x=>`<div>${safe(x.timestamp)} · ${safe(x.summary)} · ${safe(x.trace_id||'')}</div>`).join(''):'<span class="muted">No recent activity.</span>';document.querySelectorAll('[data-job]').forEach(b=>b.onclick=()=>selectJob(b.dataset.job));$('error').textContent='';}catch(e){$('error').textContent=e.message;}}
-async function selectJob(id){selected=id;try{const p=params(),j=await api(`/supervisor-coding-workflows/${encodeURIComponent(id)}/job?${p}`),g=await api(`/supervisor-coding-workflows/${encodeURIComponent(id)}/guidance?${p}`);$('jobs').innerHTML=`<div class="attention"><h3>${safe(j.workflow_id)} · ${safe(j.status)}</h3><p>${safe(g.headline)}</p><p>${safe(g.explanation)}</p>${g.high_impact?`<div class="warning">This action modifies ${g.affected_resources.length} workspace file(s). Checks will not run automatically; Git will not be committed or pushed; retries will not occur automatically.</div>`:''}<div class="files">${g.affected_resources.map(safe).join('\n')}</div><p class="muted">Will do: ${g.will_do.map(safe).join('; ')}</p><p class="muted">Will not do: ${g.will_not_do.map(safe).join('; ')}</p><button id="action" data-action="${safe(g.next_action)}">${safe(g.next_action)}</button></div>`;$('action').onclick=()=>runAction(g.next_action);}catch(e){$('error').textContent=e.message;}}
-async function runAction(action){if(!selected)return;const body={action,scope:$('scope').value.trim()};if(action.startsWith('review_'))body.decision=confirm('Accept this explicit review?')?'accept':'reject';if(action==='request_revision')body.note=prompt('Bounded revision note:')||'';try{await api(`/supervisor-coding-workflows/${encodeURIComponent(selected)}/action`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});await load();await selectJob(selected);}catch(e){$('error').textContent=e.message;await load();}}
-$('refresh').onclick=load;$('workspace').onchange=load;$('create').onclick=async()=>{try{const objective=$('objective').value.trim();if(!objective)throw new Error('Objective required');const d=await api('/supervisor-workflows/coding',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scope:$('scope').value.trim(),workspace:$('workspace').value,instruction:objective})});selected=d.workflow_id;$('objective').value='';await load();await selectJob(selected);}catch(e){$('error').textContent=e.message;}};loadWorkspaces();
-</script></main></body></html>"""
+</main></body></html>"""
 
 CHAT_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rexroad AI Chat</title><style>
 :root{color-scheme:dark;font-family:system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:#10151c;color:#e8eef5}main{height:100vh;display:grid;grid-template-columns:250px 1fr}.side{padding:1rem;background:#18212b;border-right:1px solid #2b3a49;overflow:auto}.brand{font-size:1.25rem;font-weight:700;margin-bottom:1rem}button,select,textarea{font:inherit;border:1px solid #52677a;border-radius:7px;background:#101820;color:inherit;padding:.6rem}button{cursor:pointer;background:#245b87}button:hover{background:#2e73a8}.side button{width:100%;margin-bottom:.6rem}.side a{color:#9fd0f3;display:block;margin:.6rem 0}.session{padding:.55rem;border-radius:6px;cursor:pointer;margin:.3rem 0}.session:hover{background:#263747}.chat{display:flex;flex-direction:column;min-width:0}.messages{flex:1;overflow:auto;padding:2rem max(1rem,calc((100% - 800px)/2))}.msg{padding:.8rem 1rem;border-radius:10px;margin:.8rem 0;white-space:pre-wrap;overflow-wrap:anywhere}.user{background:#245b87;margin-left:15%}.assistant{background:#1c2833;margin-right:15%}.composer{padding:1rem max(1rem,calc((100% - 800px)/2));border-top:1px solid #2b3a49;display:flex;gap:.6rem}.composer textarea{flex:1;min-height:48px;resize:vertical}.status{color:#a8b5c2;min-height:1.4rem;font-size:.9rem}.context{width:100%;margin-bottom:.6rem}.error{color:#ff9696}@media(max-width:700px){main{grid-template-columns:1fr}.side{height:auto;border-right:0;border-bottom:1px solid #2b3a49}.messages{padding:1rem}.user,.assistant{margin-left:0;margin-right:0}}
@@ -319,7 +310,9 @@ async def list_skills(workspace: str | None = None) -> list[dict[str, object]]:
 
 @app.get("/operator", response_class=HTMLResponse)
 async def operator_page() -> HTMLResponse:
-    return HTMLResponse(OPERATOR_HTML)
+    shell = OPERATOR_HTML.split("</main>", 1)[0]
+    shell = shell.replace("</style>", "input,select,pre{max-width:100%;box-sizing:border-box}pre{overflow:auto;white-space:pre-wrap}button:disabled{opacity:.5;cursor:default}</style>")
+    return HTMLResponse(shell + '<script src="/operator-controls.js"></script></main></body></html>')
 
 
 @app.get("/chat", response_class=HTMLResponse)
@@ -568,6 +561,13 @@ async def agent_query(
         raise HTTPException(status_code=422, detail="Repeated tool calls made no progress; the request was stopped") from None
     except AgentLoopLimitError:
         raise HTTPException(status_code=422, detail="The request exceeded the bounded tool-use limit") from None
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="The AI model service is unavailable or timed out. Start the local model with Start-RexroadAI.ps1, then retry in this chat. Saved work is preserved.") from None
+
+
+@app.get("/operator-controls.js")
+async def operator_controls() -> FileResponse:
+    return FileResponse(Path(__file__).parent / "static" / "operator-controls.js", media_type="text/javascript")
 
 
 _STREAM_TOOL_LABELS = {
@@ -601,6 +601,8 @@ async def agent_query_stream(request: AgentQueryRequest) -> StreamingResponse:
             yield _stream_event("error", {"message": "Repeated tool calls made no progress; the request was stopped"})
         except AgentLoopLimitError:
             yield _stream_event("error", {"message": "The request exceeded the bounded tool-use limit"})
+        except httpx.RequestError:
+            yield _stream_event("error", {"message": "The AI model service is unavailable or timed out. Start the local model with Start-RexroadAI.ps1, then retry in this chat. Saved work is preserved."})
         except Exception:  # noqa: BLE001 - streaming boundary returns safe failure
             yield _stream_event("error", {"message": "The request could not be completed safely"})
 
@@ -1132,6 +1134,31 @@ async def create_coding_proposal(workflow_id: str, scope: str, request: Proposal
         return coding_proposal_service.create(workflow_id, scope, request)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="Proposal unavailable") from exc
+
+
+_coding_generation_locks: dict[str, asyncio.Lock] = {}
+
+
+class CodingProposalGenerationRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
+@app.post("/supervisor-coding-workflows/{workflow_id}/proposal/generate", response_model=CodingProposal)
+async def generate_coding_proposal(workflow_id: str, scope: str, request: CodingProposalGenerationRequest | None = None) -> CodingProposal:
+    async with _coding_generation_locks.setdefault(workflow_id, asyncio.Lock()):
+        try:
+            return await coding_proposal_service.generate(workflow_id, scope, provider_registry.get(settings.default_provider), get_default_model(settings, settings.default_provider), request.note if request else None)
+        except httpx.RequestError:
+            raise HTTPException(status_code=503, detail="The AI model service is unavailable or timed out. Saved analysis is preserved; restart the local model and retry.") from None
+        except ValueError as exc:
+            reason = str(exc)
+            if reason.startswith("structured output validation failed") or reason == "structured response exceeded the size limit":
+                detail = "The model did not return a valid bounded proposal. Saved analysis is preserved; retry proposal generation."
+            elif reason == "proposal must quote unique text from reviewed source":
+                detail = "The proposal did not match the saved source exactly. No files changed; retry proposal generation."
+            else:
+                detail = "A proposal requires accepted analysis, complete source evidence, and unchanged target files. Review the saved worker report before retrying."
+            raise HTTPException(status_code=409, detail=detail) from None
 
 
 @app.get("/supervisor-coding-workflows/{workflow_id}/proposal", response_model=CodingProposal)

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
 
+from app.agents.citations import ground_line_references, numbered_source
 from app.agents.context import (
     build_agent_system_context,
     read_only_intent,
@@ -239,6 +240,7 @@ class AgentService:
         verification_requested = False
         draft_content = ""
         previous_tool_progress: set[str] = set()
+        source_snapshots: dict[str, str] = {}
 
         while True:
             try:
@@ -421,11 +423,14 @@ class AgentService:
                     messages.append(
                         ModelMessage(
                             role="tool",
-                            content=content,
+                            content=numbered_source(str(tool_call.arguments.get("relative_path", "")), content) if tool_call.name == "filesystem.read" else content,
                             tool_call_id=tool_call.id,
                             tool_name=tool_call.name,
                         )
                     )
+
+                    if tool_call.name == "filesystem.read" and isinstance(result, str):
+                        source_snapshots[str(tool_call.arguments.get("relative_path", ""))] = result
 
                 continue
 
@@ -461,6 +466,7 @@ class AgentService:
                 verdict_lines[0] == "VERIFIED" or verdict_lines[-1] == "VERIFIED"
             )
             final_content = draft_content if verification_requested and verified else response.content
+            final_content = ground_line_references(final_content, source_snapshots)
             if self._journal is not None:
                 self._journal.append_event(
                     session_id=session_id,

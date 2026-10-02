@@ -14,6 +14,7 @@ from app.plans.models import PlanCreate, PlanStepCreate
 from app.plans.service import PlanService
 from app.plans.specs import ExecutionSpecService
 from app.policy.workspaces import WorkspaceRegistry
+from app.storage import SQLiteDatabase
 from app.subagents import SubAgentService, SupervisorDispatchRequest
 from app.tools.git import ReadOnlyGit
 from app.tools.registry import ToolRegistry
@@ -73,6 +74,7 @@ class CodingWorkflow(BaseModel):
     verifier_task_id: str | None = None
     verifier_dispatch_id: str | None = None
     verifier_review_status: str | None = None
+    verification_note: str | None = Field(default=None, max_length=2000)
     outcome: str | None = None
     baseline_status: str | None = None
     baseline_branch: str | None = None
@@ -193,16 +195,38 @@ class CodingWorkflowService:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_checks": raise ValueError("checks are not available")
         if not checks or len(checks) > self.MAX_ACTIONS: raise ValueError("at most five checks")
-        plan = self.plans.create(PlanCreate(scope=scope, workspace=item.workspace, goal=f"Checks: {item.instruction}", steps=[PlanStepCreate(title=f"Run {c.check_id}", metadata={"coding_check": True}) for c in checks]))
-        ids = []
-        for step, check in zip(plan.steps, checks):
+        for check in checks:
             if check.check_id not in {"pytest", "ruff", "git_diff_check"}: raise ValueError("unsupported check")
-            spec = self.specs.create(scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": item.workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}, session_id=item.parent_session_id)
-            ids.append(spec.id)
-        item = item.model_copy(update={"plan_id": plan.id, "check_spec_ids": ids, "status": "awaiting_checks"}); self._save(item); return item
+        with SQLiteDatabase(self.path).transaction(immediate=True) as connection:
+            plan = self.plans.create_with_connection(connection, PlanCreate(scope=scope, workspace=item.workspace, goal=f"Checks: {item.instruction}", steps=[PlanStepCreate(title=f"Run {c.check_id}", metadata={"coding_check": True}) for c in checks]))
+            ids = []
+            for step, check in zip(plan.steps, checks):
+                spec = self.specs.create_with_connection(connection, scope=scope, plan_id=plan.id, step_id=step.id, tool_name="workspace.run_check", arguments={"workspace": item.workspace, "check_id": check.check_id, "targets": check.targets}, verification={"type": "field_equals", "field": "passed", "expected": True}, session_id=item.parent_session_id or f"coding:{workflow_id}", validate_step=False)
+                ids.append(spec.id)
+            updated = item.model_copy(update={"plan_id": plan.id, "check_spec_ids": ids, "status": "awaiting_checks"})
+            connection.execute("INSERT OR REPLACE INTO coding_workflows VALUES (?, ?)", (updated.workflow_id, updated.model_dump_json()))
+        return updated
+
+    def retry_checks(self, workflow_id: str, scope: str) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if item.status != "failed" or item.outcome != "check_failed" or not item.mutation_trace_ids:
+            raise ValueError("only failed checks after implementation can be retried")
+        checks = []
+        for spec_id in item.check_spec_ids:
+            spec = self.specs.get(spec_id, scope)
+            if spec is None or spec.tool_name != "workspace.run_check":
+                raise ValueError("saved check specifications required")
+            checks.append(CheckAction(check_id=spec.arguments["check_id"], targets=spec.arguments.get("targets", [])))
+        self._save(item.model_copy(update={"status": "awaiting_checks", "outcome": None}))
+        try:
+            return self.prepare_checks(workflow_id, scope, checks)
+        except Exception:
+            self._save(item)
+            raise
 
     def execute_checks(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
+        if item.status != "awaiting_checks": raise ValueError("checks are not available")
         if not item.check_spec_ids: raise ValueError("checks are not prepared")
         traces = []
         for spec_id in item.check_spec_ids:
@@ -223,7 +247,10 @@ class CodingWorkflowService:
     async def start_verification(self, workflow_id: str, scope: str) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_verification": raise ValueError("verification is not available")
-        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=item.workspace, instruction=f"Verify completed work: {item.instruction[:1600]} Files changed: {', '.join(item.changed_files[:20])}", parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id, **(self.agents.workflow_options("verifier") if getattr(self.agents, "provider_backed", False) else {}))
+        files = [spec.arguments["relative_path"] for sid in item.mutation_spec_ids if (spec := self.specs.get(sid, scope)) is not None]
+        checks = [{"check_id": spec.arguments["check_id"], "passed_trace_id": trace_id} for sid, trace_id in zip(item.check_spec_ids, item.check_trace_ids) if (spec := self.specs.get(sid, scope)) is not None]
+        instruction = f"Verify completed work: Independently verify the CURRENT implementation of workflow {workflow_id}. Read the approved files and report what they contain now, not what the original request asked to change. Objective: {item.instruction[:1600]}. Approved files: {files}. Registered checks completed successfully: {checks}. These are saved executor results, not model assertions. Do not invent a test failure or request a fix already present in the current source. Explain any conflict with these records using exact current source evidence. Supervisor verification context: {item.verification_note or 'None'}."
+        request = SupervisorDispatchRequest(worker_profile="verifier", scope=scope, workspace=item.workspace, instruction=instruction[:4000], required_files=files[:5], parent_session_id=item.parent_session_id, plan_id=item.parent_plan_id, step_id=item.parent_step_id, **(self.agents.workflow_options("verifier") if getattr(self.agents, "provider_backed", False) else {}))
         auth = self.agents.authorize_dispatch(request); result = await self.agents.dispatch(request, auth)
         audits = self.agents.audits(scope, 100); dispatch_id = audits[0].dispatch_id if audits and audits[0].task_id == result.task_id else None
         updated = self._require(workflow_id, scope).model_copy(update={"verifier_task_id": result.task_id, "verifier_dispatch_id": dispatch_id, "verifier_review_status": "pending", "status": "awaiting_verifier_review" if result.status == "completed" else "failed"}); self._save(updated); return updated
@@ -233,6 +260,14 @@ class CodingWorkflowService:
         if item.status != "awaiting_verifier_review" or not item.verifier_task_id: raise ValueError("verifier review unavailable")
         review = self.agents.review(item.verifier_task_id, scope, status, reviewer_session_id, note)
         updated = item.model_copy(update={"verifier_review_status": review.status, "status": "completed" if status == "accepted" else "failed", "outcome": "verified" if status == "accepted" else "rejected"}); self._save(updated); return updated
+
+    def retry_verifier(self, workflow_id: str, scope: str, note: str | None = None) -> CodingWorkflow:
+        item = self._require(workflow_id, scope)
+        if item.status != "failed" or item.outcome != "rejected" or item.verifier_review_status != "rejected" or not item.check_trace_ids:
+            raise ValueError("only rejected verification with saved successful checks can be retried")
+        updated = item.model_copy(update={"status": "awaiting_verification", "outcome": None, "verification_note": note})
+        self._save(updated)
+        return updated
 
     def cancel(self, workflow_id: str, scope: str, reason: str | None = None) -> CodingWorkflow:
         item = self._require(workflow_id, scope)

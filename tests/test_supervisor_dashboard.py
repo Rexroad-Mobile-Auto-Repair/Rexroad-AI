@@ -105,12 +105,13 @@ def test_operator_page_is_human_surface_without_capabilities_or_patch_payloads()
     assert "ToolApproval" not in response.text
     assert "expected_text" not in response.text
     assert "replacement" not in response.text
-    assert "api('/supervisor/dashboard?" in response.text
+    assert '/operator-controls.js' in response.text
+    assert "api('/supervisor/dashboard?" in client.get('/operator-controls.js').text
 
 
 def test_operator_page_has_no_load_time_mutation_endpoint():
     client = TestClient(main.app)
-    page = client.get("/operator").text
+    page = client.get("/operator-controls.js").text
     assert "method:'POST'" in page
     assert "$('create').onclick" in page
-    assert "runAction(g.next_action)" in page
+    assert "runAction(g.next_action," in page

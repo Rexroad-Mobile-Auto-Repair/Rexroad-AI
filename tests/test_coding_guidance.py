@@ -45,7 +45,7 @@ def test_guidance_action_registry_matches_supervisor_action_registry() -> None:
         "start_analysis", "review_analysis", "create_proposal", "review_proposal",
         "request_revision", "convert_proposal", "review_specs", "request_patch_approval",
         "review_patch_approvals", "execute_patches", "execute_checks", "start_verifier",
-        "review_verifier",
+        "review_verifier", "retry_checks", "retry_verifier",
     }
     assert actions == supported
 

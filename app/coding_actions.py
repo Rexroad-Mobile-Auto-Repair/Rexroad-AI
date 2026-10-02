@@ -15,7 +15,7 @@ class CodingJobActionRequest(BaseModel):
         "start_analysis", "review_analysis", "create_proposal", "review_proposal",
         "request_revision", "convert_proposal", "review_specs", "request_patch_approval",
         "review_patch_approvals", "execute_patches", "execute_checks",
-        "start_verifier", "review_verifier"
+        "start_verifier", "review_verifier", "retry_checks", "retry_verifier"
     ]
     scope: str
     decision: Literal["accept", "reject"] | None = None
@@ -102,6 +102,12 @@ class SupervisorCodingActionService:
             affected = [*updated.mutation_trace_ids]
         elif action == "execute_checks":
             updated = self.workflows.execute_checks(workflow_id, request.scope)
+            affected = [*updated.check_trace_ids]
+        elif action == "retry_checks":
+            updated = self.workflows.retry_checks(workflow_id, request.scope)
+            affected = [*updated.check_spec_ids]
+        elif action == "retry_verifier":
+            updated = self.workflows.retry_verifier(workflow_id, request.scope, request.note)
             affected = [*updated.check_trace_ids]
         elif action == "start_verifier":
             updated = await self.workflows.start_verification(workflow_id, request.scope)

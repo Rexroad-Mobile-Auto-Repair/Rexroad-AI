@@ -17,6 +17,27 @@ def setup_plan(tmp_path: Path):
     return plans, plan, PlanExecutionCoordinator(plans, tools)
 
 
+@pytest.mark.parametrize("passed", [True, False])
+def test_verbose_check_keeps_parseable_pass_fail_evidence(tmp_path, passed):
+    import ast
+
+    from app.plans.verification import FieldEqualsPolicy
+    plans, plan, coordinator = setup_plan(tmp_path)
+    journal = ActionJournal(tmp_path / "journal.sqlite3")
+    tools = coordinator._tools
+    tools.register(ToolDefinition(name="workspace.run_check", description="check", permission="workspace_check", handler=lambda: {"passed": passed, "exit_code": 0 if passed else 1, "stdout": "traceback\n" * 1000, "stderr": ""}))
+    coordinator = PlanExecutionCoordinator(plans, tools, journal)
+    args = {"scope": "a", "plan_id": plan.id, "step_id": plan.steps[0].id, "tool_name": "workspace.run_check", "authorization": tools.authorize("workspace.run_check", "a", "session"), "arguments": {}, "session_id": "session", "verification_policy": FieldEqualsPolicy("passed", True)}
+    if passed:
+        coordinator.execute_once(**args)
+    else:
+        with pytest.raises(PlanExecutionError): coordinator.execute_once(**args)
+    entry = journal.list_session("session")[0]
+    result = ast.literal_eval(entry.result_preview)
+    assert result["passed"] is passed and result["exit_code"] == (0 if passed else 1)
+    assert len(entry.result_preview) < 1000
+
+
 def test_executes_exactly_one_step_and_completes_after_verification(tmp_path: Path) -> None:
     plans, plan, coordinator = setup_plan(tmp_path)
     calls = []

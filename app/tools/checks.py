@@ -57,6 +57,10 @@ class WorkspaceChecks:
         started = time.monotonic()
         env = {key: value for key, value in os.environ.items() if not any(secret in key.casefold() for secret in ("key", "token", "secret", "password", "credential"))}
         env["PYTHONUNBUFFERED"] = "1"
+        if check_id == "pytest":
+            temp_root = self._workspaces.resolve_path(workspace, ".pytest-tmp/checks")
+            temp_root.mkdir(parents=True, exist_ok=True)
+            env["PYTEST_DEBUG_TEMPROOT"] = str(temp_root)
         try:
             completed = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=spec.timeout_seconds, shell=False, env=env, check=False)
             timed_out = False

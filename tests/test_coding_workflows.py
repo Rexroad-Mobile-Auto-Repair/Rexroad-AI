@@ -107,6 +107,77 @@ def test_check_action_has_bounded_shape() -> None:
     assert action.check_id == "pytest"
 
 
+def test_check_retry_preserves_applied_patches_and_failed_attempt(tmp_path):
+    from types import SimpleNamespace
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    item = item.model_copy(update={"plan_id": "failed-plan", "mutation_spec_ids": ["patch"], "mutation_trace_ids": ["applied"], "check_spec_ids": ["old-check"]})
+    service._save(item)
+    item = service._record_attempt(item, "old-check", "old-step", "check")
+    service._finish_attempt(item.workflow_id, "s", item.execution_attempts[-1].attempt_id, "failed", "failed-trace")
+    failed = service.get(item.workflow_id, "s").model_copy(update={"status": "failed", "outcome": "check_failed"})
+    service._save(failed)
+    created = []
+    class Specs:
+        def get(self, *args):
+            return SimpleNamespace(tool_name="workspace.run_check", arguments={"check_id": "pytest", "targets": ["test.py"]})
+        def create(self, **kwargs):
+            created.append(kwargs)
+            return SimpleNamespace(id="new-check")
+        def create_with_connection(self, connection, **kwargs):
+            return self.create(**kwargs)
+    class Plans:
+        def create(self, request):
+            return SimpleNamespace(id="retry-plan", steps=[SimpleNamespace(id="retry-step")])
+        def create_with_connection(self, connection, request):
+            return self.create(request)
+    service.specs, service.plans = Specs(), Plans()
+    recovered = service.retry_checks(item.workflow_id, "s")
+    assert recovered.plan_id == "retry-plan" and recovered.check_spec_ids == ["new-check"]
+    assert recovered.mutation_spec_ids == ["patch"] and recovered.mutation_trace_ids == ["applied"]
+    assert recovered.execution_attempts == failed.execution_attempts
+    assert [x["tool_name"] for x in created] == ["workspace.run_check"]
+    assert _service(tmp_path).get(item.workflow_id, "s") == recovered
+
+
+def test_two_check_specs_are_prepared_before_either_step_runs(tmp_path):
+    from tests.test_coding_guidance_e2e import _git_workspace, _services
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _git_workspace(workspace)
+    service = _services(tmp_path, workspace)[2]
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="fixture", instruction="check"))
+    service._save(item.model_copy(update={"status": "awaiting_checks"}))
+    prepared = service.prepare_checks(item.workflow_id, "s", [CheckAction(check_id="pytest"), CheckAction(check_id="git_diff_check")])
+    assert len(prepared.check_spec_ids) == 2
+    assert [step.status for step in service.plans.get(prepared.plan_id, "s").steps] == ["pending", "pending"]
+    assert all(service.specs.get(sid, "s").session_id == f"coding:{item.workflow_id}" for sid in prepared.check_spec_ids)
+
+
+@pytest.mark.parametrize("status,outcome,traces", [("completed", "verified", ["applied"]), ("failed", "rejected", ["applied"]), ("failed", "check_failed", [])])
+def test_check_retry_rejects_other_failures_and_terminal_work(tmp_path, status, outcome, traces):
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    service._save(item.model_copy(update={"status": status, "outcome": outcome, "mutation_trace_ids": traces}))
+    with pytest.raises(ValueError, match="only failed checks"):
+        service.retry_checks(item.workflow_id, "s")
+
+
+@pytest.mark.parametrize("status,review,traces,allowed", [("failed", "rejected", ["passed-check"], True), ("completed", "rejected", ["passed-check"], False), ("failed", "pending", ["passed-check"], False), ("failed", "rejected", [], False)])
+def test_verification_retry_requires_rejected_review_and_saved_checks(tmp_path, status, review, traces, allowed):
+    service = _service(tmp_path)
+    item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    service._save(item.model_copy(update={"status": status, "outcome": "rejected", "verifier_review_status": review, "check_trace_ids": traces, "mutation_trace_ids": ["applied"]}))
+    if allowed:
+        retried = service.retry_verifier(item.workflow_id, "s", "Verified source contract")
+        assert retried.status == "awaiting_verification"
+        assert _service(tmp_path).get(item.workflow_id, "s").verification_note == "Verified source contract"
+        assert retried.mutation_trace_ids == ["applied"] and retried.check_trace_ids == traces
+    else:
+        with pytest.raises(ValueError, match="only rejected verification"):
+            service.retry_verifier(item.workflow_id, "s")
+
+
 def test_terminal_workflow_cannot_prepare_checks(tmp_path: Path) -> None:
     service = _service(tmp_path)
     item = service.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="inspect"))

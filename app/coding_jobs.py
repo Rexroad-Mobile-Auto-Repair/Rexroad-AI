@@ -77,7 +77,7 @@ class CodingJobService:
             return None
         proposal = self._latest_proposal(workflow_id, scope)
         patch_specs = [self._spec_summary(sid, scope, "patch", proposal) for sid in (proposal.patch_spec_ids if proposal else [])]
-        check_specs = [self._spec_summary(sid, scope, "check", proposal) for sid in (proposal.check_spec_ids if proposal else [])]
+        check_specs = [self._spec_summary(sid, scope, "check", proposal) for sid in (workflow.check_spec_ids or (proposal.check_spec_ids if proposal else []))]
         traces = [*workflow.mutation_trace_ids, *workflow.check_trace_ids]
         status, action = self._derive(workflow, proposal, patch_specs, check_specs)
         changed = sorted({item.relative_path for item in patch_specs if item.changed is True and item.relative_path})
@@ -178,6 +178,10 @@ class CodingJobService:
         return None
 
     def _derive(self, workflow, proposal, patches, checks):
+        if workflow.status == "failed" and workflow.outcome == "rejected" and workflow.verifier_review_status == "rejected" and workflow.check_trace_ids:
+            return "verification_rejected", CodingJobAction(action="retry_verifier", allowed=True, reason="retry read-only verification using saved check evidence")
+        if workflow.status == "failed" and workflow.outcome == "check_failed" and workflow.mutation_trace_ids:
+            return "checks_failed", CodingJobAction(action="retry_checks", allowed=True, reason="retry saved checks without reapplying files")
         if workflow.status in {"completed", "failed", "cancelled"}:
             return workflow.status, CodingJobAction(action="none", allowed=False, reason="workflow terminal")
         if workflow.status == "awaiting_analysis":

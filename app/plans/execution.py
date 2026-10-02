@@ -11,6 +11,19 @@ from app.tools.output_policy import sanitize_output
 from app.tools.registry import ToolApproval, ToolAuthorization, ToolRegistry
 
 
+def _result_preview(tool_name: str, result: Any) -> str | None:
+    if result is None:
+        return None
+    value = sanitize_output(result)
+    if tool_name == "workspace.run_check" and isinstance(value, dict):
+        value = {key: value[key] for key in ("check_id", "status", "passed", "exit_code", "timed_out", "duration_ms") if key in value}
+        # Keep this dictionary parseable even when pytest emits a long traceback.
+        value["stdout"] = str(result.get("stdout", ""))[:100]
+        value["stderr"] = str(result.get("stderr", ""))[:100]
+        return str(value)
+    return str(value)[:1000]
+
+
 class PlanExecutionError(RuntimeError):
     def __init__(self, message: str, trace_id: str | None = None) -> None:
         super().__init__(message)
@@ -61,6 +74,7 @@ class PlanExecutionCoordinator:
         verification_status = "not_run"
         verification_reason = "not_requested"
         self._plans.transition(plan_id, step_id, "in_progress", scope, trace_id)
+        result = None
         try:
             result = self._tools.execute(tool_name, **arguments)
             verification = verification_policy.verify(result) if verification_policy is not None else None
@@ -83,7 +97,8 @@ class PlanExecutionCoordinator:
                 journal_arguments = {"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason, **(trace_metadata or {})}
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
                                      permission=tool.permission, arguments=journal_arguments,
-                                     status="error", error="verification failed" if isinstance(exc, PlanExecutionError) else "tool execution failed")
+                                     status="error", error="verification failed" if isinstance(exc, PlanExecutionError) else "tool execution failed",
+                                     result_preview=_result_preview(tool_name, result) if tool_name == "workspace.run_check" else None)
             self._plans.transition(plan_id, step_id, "failed", scope, trace_id)
             if isinstance(exc, PlanExecutionError):
                 exc.trace_id = trace_id
@@ -94,7 +109,7 @@ class PlanExecutionCoordinator:
                 journal_arguments = {"scope": scope, "plan_id": plan_id, "step_id": step_id, "trace_id": trace_id, "approval_validated": approval_validated, "verification_status": verification_status, "verification_reason": verification_reason, **(trace_metadata or {})}
                 self._journal.record(session_id=session_id, provider="plan", model="coordinator", tool=tool_name,
                                      permission=tool.permission, arguments=journal_arguments,
-                                     status="success", result_preview=str(sanitize_output(result))[:1000])
+                                     status="success", result_preview=_result_preview(tool_name, result))
             self._plans.transition(plan_id, step_id, "completed", scope, trace_id)
             if self._on_success is not None:
                 try:

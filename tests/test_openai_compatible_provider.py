@@ -5,6 +5,7 @@ import pytest
 
 from app.providers.models import ModelRequest
 from app.providers.openai_compatible import OpenAICompatibleProvider
+from app.structured_output import StructuredOutputSpec
 from app.tools.models import ModelMessage, ToolCall, ToolSpec
 
 
@@ -73,6 +74,21 @@ async def test_openai_compatible_generate(
     assert response.model == "qwen3-coder-30b-a3b-instruct"
     assert response.content == "hello from local model"
     assert response.tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_structured_generation_sends_schema_to_local_server(monkeypatch):
+    handler = MockTransport({"choices": [{"message": {"content": '{"answer":"ok"}'}}]})
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
+    response = await OpenAICompatibleProvider("http://localhost:1234/v1").generate(ModelRequest(
+        model="test", messages=[ModelMessage(role="user", content="Answer")],
+        structured_output=StructuredOutputSpec(name="answer", json_schema=schema),
+    ))
+    payload = json.loads(handler.last_request.content)
+    assert payload["response_format"] == {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}}
+    assert json.loads(response.content) == {"answer": "ok"}
 
 
 @pytest.mark.asyncio

@@ -137,6 +137,13 @@ class OpenAICompatibleProvider(ModelProvider):
             "temperature": request.temperature,
         }
 
+        if request.structured_output is not None:
+            spec = request.structured_output
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": spec.name, "schema": spec.json_schema},
+            }
+
         if request.tools:
             payload["tools"] = [
                 self._tool_payload(tool)

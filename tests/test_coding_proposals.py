@@ -8,6 +8,7 @@ import pytest
 from app.coding_proposals import CodingProposalService, ProposalCreate, ProposedChange
 from app.coding_workflows import CodingWorkflowCreate
 from app.policy.workspaces import WorkspaceRegistry
+from app.providers.models import ModelResponse
 from app.subagents import SubAgentResult
 from tests.test_coding_workflows import _service
 
@@ -247,3 +248,50 @@ def test_conversion_rejects_ambiguous_or_oversized_file_before_creating_specs(tm
         proposals.convert(proposal.proposal_id, "s", "ws")
     assert proposals.get(proposal.proposal_id, "s").conversion_status is None
     assert (tmp_path / "target.txt").read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_generated_proposal_uses_reviewed_sources_and_reuses_saved_result(tmp_path):
+    (tmp_path / "target.txt").write_text("before", encoding="utf-8")
+    workflows = _service(tmp_path)
+    workflow = workflows.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    workflows._save(workflow.model_copy(update={"status": "analysis_accepted", "analyst_task_id": "analyst"}))
+    workflows.agents.source_evidence = lambda scope, task: [{"path": "target.txt", "text": "before", "truncated": False}]
+    proposals = CodingProposalService(tmp_path / "state.db", workflows, WorkspaceRegistry({"ws": tmp_path}), workflows.git)
+
+    class Provider:
+        calls = 0
+        async def generate(self, request):
+            self.calls += 1
+            assert request.tools == []
+            return ModelResponse(provider="openai_compatible", model=request.model, content=json.dumps({"changes": [{"relative_path": "target.txt", "expected_text": "before", "replacement": "after"}], "summary": "Edit"}))
+    provider = Provider()
+    created = await proposals.generate(workflow.workflow_id, "s", provider, "test")
+    repeated = await proposals.generate(workflow.workflow_id, "s", provider, "test")
+    assert created.proposal_id == repeated.proposal_id and provider.calls == 1
+    assert created.status == "ready_for_review"
+    assert (tmp_path / "target.txt").read_text(encoding="utf-8") == "before"
+    proposals.review(created.proposal_id, "s", "rejected", "supervisor")
+    revised = await proposals.generate(workflow.workflow_id, "s", provider, "test", "Include the missing test")
+    assert revised.parent_proposal_id == created.proposal_id and revised.revision_number == 2
+    assert proposals.get(created.proposal_id, "s").superseded_by_proposal_id == revised.proposal_id
+    assert provider.calls == 2 and (tmp_path / "target.txt").read_text(encoding="utf-8") == "before"
+    workflows.agents.source_evidence = lambda scope, task: [{"path": "target.txt", "text": "before", "truncated": True}]
+    with pytest.raises(ValueError, match="accepted source analysis"):
+        await proposals.generate(workflow.workflow_id, "wrong-scope", provider, "test")
+
+
+@pytest.mark.asyncio
+async def test_generated_proposal_rejects_unreviewed_target(tmp_path):
+    (tmp_path / "target.txt").write_text("before", encoding="utf-8")
+    workflows = _service(tmp_path)
+    workflow = workflows.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="edit"))
+    workflows._save(workflow.model_copy(update={"status": "analysis_accepted", "analyst_task_id": "analyst"}))
+    workflows.agents.source_evidence = lambda scope, task: [{"path": "other.txt", "text": "before", "truncated": False}]
+    proposals = CodingProposalService(tmp_path / "state.db", workflows, WorkspaceRegistry({"ws": tmp_path}), workflows.git)
+    class Provider:
+        async def generate(self, request):
+            return ModelResponse(provider="openai_compatible", model=request.model, content=json.dumps({"changes": [{"relative_path": "target.txt", "expected_text": "before", "replacement": "after"}]}))
+    with pytest.raises(ValueError, match="reviewed source"):
+        await proposals.generate(workflow.workflow_id, "s", Provider(), "test")
+    assert proposals.history(workflow.workflow_id, "s") == []

@@ -10,7 +10,7 @@ from app.tools.registry import ToolDefinition, ToolRegistry
 def test_pytest_check_is_bounded_and_workspace_scoped(tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "test_ok.py").write_text("def test_ok():\n    assert 1 == 1\n", encoding="utf-8")
+    (root / "test_ok.py").write_text("def test_ok(tmp_path):\n    assert '.pytest-tmp' in str(tmp_path)\n", encoding="utf-8")
     checks = WorkspaceChecks(WorkspaceRegistry({"repo": root}))
     result = checks.run_check("repo", "pytest", ["test_ok.py"])
     assert result["status"] == "passed"
