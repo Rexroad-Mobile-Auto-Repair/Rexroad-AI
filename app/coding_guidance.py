@@ -46,6 +46,9 @@ class CodingGuidanceService:
         confirmation = not terminal
         headline = "No further action is available." if terminal else f"Next explicit action: {action}."
         explanation = job.next_action.reason[:500]
+        if terminal and job.status == "completed" and job.outcome == "verified":
+            headline = "Work verified."
+            explanation = "The file changes and checks completed, and the verifier report was accepted."
         preview: dict[str, Any] = {}
         safe: dict[str, Any] = {}
         will_do: list[str] = []

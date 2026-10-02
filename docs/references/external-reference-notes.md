@@ -108,3 +108,37 @@ Source lines sent to the model are numbered. Final line references are retained
 only when a unique exact quotation supports them; unsupported line references
 are replaced with a reference to the saved source. This grounds citation anchors,
 not every statement made by the model.
+
+## Follow-up reliability milestone
+
+The dashboard keeps failed plans and worker reports intact. Failed check plans
+move to Task history only when a replacement check plan led to a verified coding
+workflow. Stopped read-only tasks also appear in history and remain inspectable
+in Coding Jobs. Failures involving patch execution stay in Needs Attention.
+
+A workflow can declare required_test_paths. When an objective explicitly requests
+adding or updating tests and names existing Python test files, those paths are
+also recorded automatically. Proposals must change each required test file and
+include a pytest check covering them before they can be saved for review. This
+checks completeness, not the quality or meaning of an assertion. Read-only test
+reviews do not require test changes, and no input-validation contract is invented.
+
+Before accepting verification, the normal runtime compares saved check traces,
+approved patch hashes, current files, and the verifier's audited source snapshots.
+Missing or stale evidence prevents acceptance. Direct claims that tests failed
+are flagged when saved checks passed; historical and negated failure descriptions
+are excluded. This bounded wording check does not prove every model statement.
+Conflicts are displayed in the panel; rejection remains available for a new
+read-only verification attempt. File approvals are never granted by verification.
+
+Live follow-up acceptance used the existing acceptance_test workspace rather than
+expanding the journal workspace's permissions. Workflow
+ed8ba316-a08f-47b0-9a99-dac7a768fd26 added Unicode-name and surrounding-space
+tests to test_example.py, preserving the prior example.py edit. Its first model
+proposal contained both requested tests; registered pytest and git_diff_check
+passed and independent source verification was accepted. Startup remains
+Start-RexroadAI.ps1. The workflow and reports are saved in scope followup-reliability.
+
+A separate normal-provider/API completeness probe rejected a proposal omitting
+the requested test file before saving a proposal or creating any execution trace.
+That probe was cancelled after verification; it granted no file approval.

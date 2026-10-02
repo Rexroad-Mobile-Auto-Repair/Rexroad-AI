@@ -116,6 +116,16 @@ def test_guidance_terminal_failure_and_cancellation_never_offer_retry() -> None:
         assert "retry" not in guidance.explanation.casefold()
 
 
+def test_completed_verified_guidance_explains_success_without_actions():
+    class Jobs:
+        def get(self, workflow_id, scope):
+            return _job("none", status="completed").model_copy(update={"outcome": "verified", "next_action": CodingJobAction(action="none", allowed=False, reason="workflow terminal")})
+    guidance = CodingGuidanceService(Jobs()).get("wf", "s")
+    assert guidance.headline == "Work verified."
+    assert guidance.explanation == "The file changes and checks completed, and the verifier report was accepted."
+    assert guidance.action_available is False and guidance.confirmation_required is False
+
+
 def test_revision_guidance_requires_explicit_note_without_materialization() -> None:
     class Jobs:
         def get(self, workflow_id: str, scope: str) -> CodingJob:

@@ -92,6 +92,7 @@ class SupervisorProjectDashboard(BaseModel):
     plans: list[DashboardPlanItem]
     recent_activity: list[DashboardActivity]
     attention: list[SupervisorAttentionItem]
+    history: list[SupervisorAttentionItem] = Field(default_factory=list)
     summary: DashboardSummary
 
 
@@ -109,6 +110,16 @@ class SupervisorDashboardService:
         workflows = self.coding_workflows.list(scope, workspace, coding_limit)
         coding: list[DashboardCodingItem] = []
         attention: list[SupervisorAttentionItem] = []
+        history: list[SupervisorAttentionItem] = []
+        recovered_plans = {
+            attempt.plan_id: workflow.workflow_id
+            for workflow in workflows
+            if workflow.status == "completed" and workflow.outcome == "verified"
+            and workflow.check_trace_ids
+            for attempt in workflow.execution_attempts
+            if attempt.kind == "check" and attempt.status == "failed"
+            and attempt.plan_id != workflow.plan_id
+        }
         for workflow in workflows:
             job = self.jobs.get(workflow.workflow_id, scope)
             if job is None or job.workspace != workspace:
@@ -116,7 +127,9 @@ class SupervisorDashboardService:
             item = self.guidance.get(job.workflow_id, scope)
             coding.append(DashboardCodingItem(workflow_id=job.workflow_id, status=job.status, objective=job.objective[:500], next_action=job.next_action.action, action_available=job.next_action.allowed, guidance_headline=item.headline[:200] if item else "", blocking_reason=job.blocked_reason, high_impact=item.high_impact if item else False, affected_resources=(item.affected_resources if item else [])[:20], updated_at=job.observed_at))
             category = self._category(job.next_action.action, job.status, job.blocked_reason)
-            if category:
+            if job.status == "failed" and not job.next_action.allowed and not job.execution_trace_ids and not getattr(workflow, "execution_attempts", []):
+                history.append(SupervisorAttentionItem(id=f"coding:{job.workflow_id}:history", category="informational", source_type="coding_job", source_id=job.workflow_id, workspace=workspace, headline="Read-only attempt stopped", reason="No file changes were executed. The failed task and its report remain available in Coding Jobs.", updated_at=job.observed_at))
+            elif category:
                 attention.append(self._attention(job, category, item))
         research = [item for item in self.research.list(scope, research_limit) if item.workspace == workspace]
         research_items = [DashboardResearchItem(workflow_id=item.workflow_id, status=item.status, researcher_review_status=item.researcher_review_status, verifier_review_status=item.verifier_review_status, updated_at=item.updated_at) for item in research]
@@ -128,7 +141,9 @@ class SupervisorDashboardService:
         plan_items = [DashboardPlanItem(plan_id=plan.id, status=plan.status, step_count=len(plan.steps), completed_step_count=sum(step.status in {"completed", "skipped"} for step in plan.steps), failed_step_count=sum(step.status == "failed" for step in plan.steps), updated_at=plan.updated_at) for plan in plans]
         for item in plan_items:
             if item.status == "failed":
-                attention.append(SupervisorAttentionItem(id=f"plan:{item.plan_id}:blocked_failure", category="blocked_failure", source_type="plan", source_id=item.plan_id, workspace=workspace, headline=f"Plan {item.plan_id} failed", reason="The authoritative plan status is failed.", updated_at=item.updated_at))
+                recovered_by = recovered_plans.get(item.plan_id)
+                record = SupervisorAttentionItem(id=f"plan:{item.plan_id}:blocked_failure", category="informational" if recovered_by else "blocked_failure", source_type="plan", source_id=item.plan_id, workspace=workspace, headline="Earlier check failure recovered" if recovered_by else f"Plan {item.plan_id} failed", reason=f"Replacement checks passed and workflow {recovered_by} was verified. The original failed plan remains saved." if recovered_by else "The authoritative plan status is failed.", updated_at=item.updated_at, references=[recovered_by] if recovered_by else [])
+                (history if recovered_by else attention).append(record)
         approvals = self.tools.list_approval_requests(scope, 100, "pending")
         approval_ids = {
             spec.approval_request_id
@@ -144,12 +159,14 @@ class SupervisorDashboardService:
         activity = [DashboardActivity(id=trace.trace_id, category="execution", status=trace.status, timestamp=trace.created_at, summary=f"{trace.tool} {trace.status}", trace_id=trace.trace_id) for trace in traces]
         attention = self._order_attention(attention)[:50]
         summary = DashboardSummary(active_coding_jobs=sum(item.status not in {"completed", "failed", "cancelled"} for item in coding), active_research_workflows=sum(item.status not in {"completed", "failed", "cancelled"} for item in research_items), active_plans=sum(item.status == "active" for item in plan_items), blocked_items=sum(item.category == "blocked_failure" for item in attention), pending_approvals=sum(item.category == "approval_required" for item in attention), pending_reviews=sum(item.category == "review_required" for item in attention), ready_actions=sum(item.category == "action_ready" for item in attention))
-        return SupervisorProjectDashboard(scope=scope, workspace=workspace, generated_at=datetime.now(UTC), project={"workspace": workspace, "available": project_state.available, "branch": project_state.branch, "head": project_state.head, "clean": project_state.clean, "changed_files": project_state.changed_files[:50], "observed_at": project_state.observed_at}, coding=coding, research=research_items, plans=plan_items, recent_activity=activity[:activity_limit], attention=attention, summary=summary)
+        return SupervisorProjectDashboard(scope=scope, workspace=workspace, generated_at=datetime.now(UTC), project={"workspace": workspace, "available": project_state.available, "branch": project_state.branch, "head": project_state.head, "clean": project_state.clean, "changed_files": project_state.changed_files[:50], "observed_at": project_state.observed_at}, coding=coding, research=research_items, plans=plan_items, recent_activity=activity[:activity_limit], attention=attention, history=history, summary=summary)
 
     @classmethod
     def _category(cls, action: str, status: str, blocked: str | None) -> AttentionCategory | None:
         if status in {"failed", "cancelled"} or blocked in {"execution failed", "check failed"}:
             return "blocked_failure"
+        if action in {"retry_checks", "retry_verifier"}:
+            return "action_ready"
         if action in {"review_patch_approvals", "request_patch_approval"}:
             return "approval_required"
         if action in {"review_analysis", "review_proposal", "review_specs", "review_verifier"}:

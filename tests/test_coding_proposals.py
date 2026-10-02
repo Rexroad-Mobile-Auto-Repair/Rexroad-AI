@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from app.coding_proposals import CodingProposalService, ProposalCreate, ProposedChange
+from app.coding_proposals import (
+    CodingProposalService,
+    ProposalCreate,
+    ProposedChange,
+    ProposedCheck,
+)
 from app.coding_workflows import CodingWorkflowCreate
 from app.policy.workspaces import WorkspaceRegistry
 from app.providers.models import ModelResponse
@@ -37,6 +42,34 @@ def test_proposal_rejects_unsupported_check_and_dirty_target(tmp_path: Path) -> 
     proposals = CodingProposalService(tmp_path / "state.db", workflow_service, WorkspaceRegistry({"ws": tmp_path}), workflow_service.git)
     with pytest.raises(ValueError, match="dirty"):
         proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[ProposedChange(relative_path="target.txt", expected_text="dirty", replacement="clean")]))
+
+
+def test_requested_test_cannot_be_omitted_or_excluded_from_checks(tmp_path):
+    (tmp_path / "target.txt").write_text("before", encoding="utf-8")
+    (tmp_path / "test_example.py").write_text("assert True", encoding="utf-8")
+    workflows = _service(tmp_path)
+    workflow = workflows.create(CodingWorkflowCreate(scope="s", workspace="ws", instruction="Change target.txt. Add a focused test in test_example.py."))
+    assert workflow.required_test_paths == ["test_example.py"]
+    workflows._save(workflow.model_copy(update={"status": "analysis_accepted", "analyst_task_id": "analyst"}))
+    proposals = CodingProposalService(tmp_path / "state.db", workflows, WorkspaceRegistry({"ws": tmp_path}), workflows.git)
+    source = ProposedChange(relative_path="target.txt", expected_text="before", replacement="after")
+    test = ProposedChange(relative_path="test_example.py", expected_text="assert True", replacement="assert 1 == 1")
+    with pytest.raises(ValueError, match="Requested test changes missing"):
+        proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[source], checks=[ProposedCheck(check_id="pytest")]))
+    with pytest.raises(ValueError, match="require a pytest check"):
+        proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[source, test], checks=[ProposedCheck(check_id="git_diff_check")]))
+    assert proposals.history(workflow.workflow_id, "s") == []
+    complete = proposals.create(workflow.workflow_id, "s", ProposalCreate(changes=[source, test], checks=[ProposedCheck(check_id="pytest", targets=["test_example.py"])]))
+    assert complete.status == "ready_for_review"
+    assert (tmp_path / "target.txt").read_text(encoding="utf-8") == "before"
+
+
+def test_reading_tests_does_not_invent_a_test_change_requirement(tmp_path):
+    from app.coding_contracts import requested_test_paths
+    assert requested_test_paths("Read example.py and tests/test_example.py. Explain its contract.") == []
+    assert requested_test_paths("Read tests/test_example.py. Do not add tests.") == []
+    assert requested_test_paths("Add a test for greeting().") == []
+    assert requested_test_paths("Add two focused tests in test_example.py.") == ["test_example.py"]
 
 
 def test_accepted_proposal_conversion_creates_only_draft_specs(tmp_path: Path) -> None:

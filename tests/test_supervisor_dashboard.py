@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,7 +69,7 @@ def test_empty_dashboard_is_deterministic_and_read_only():
 def test_coding_attention_uses_guidance_and_stable_id():
     job = CodingJob.model_construct(workflow_id="wf", job_id="wf", scope="scope", workspace="a", objective="edit", status="ready_to_execute_patches", next_action=CodingJobAction(action="execute_patches", allowed=True, reason="approved"), observed_at=NOW)
     guidance = CodingJobGuidance.model_construct(workflow_id="wf", scope="scope", workspace="a", job_status=job.status, next_action="execute_patches", action_available=True, headline="Next explicit action: execute_patches.", explanation="approved", why_now="now", affected_resources=["app/x.py"], confirmation_required=True, high_impact=True, observed_at=NOW)
-    workflow = type("Workflow", (), {"workflow_id": "wf", "workspace": "a", "updated_at": NOW, "job": job, "guidance": guidance})()
+    workflow = type("Workflow", (), {"workflow_id": "wf", "workspace": "a", "updated_at": NOW, "status": "implementing", "job": job, "guidance": guidance})()
     result = service([workflow]).get("scope", "a")
     assert result.attention[0].category == "action_ready"
     assert result.attention[0].id == "coding:wf:execute_patches"
@@ -79,6 +80,31 @@ def test_coding_attention_uses_guidance_and_stable_id():
 def test_unknown_workspace_is_rejected_without_data():
     with pytest.raises(KeyError):
         service().get("scope", "unknown")
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_only_proven_recovered_check_plans_move_to_history(verified):
+    job = CodingJob.model_construct(workflow_id="wf", job_id="wf", scope="scope", workspace="a", objective="edit", status="completed" if verified else "failed", next_action=CodingJobAction(action="none", allowed=False, reason="terminal"), observed_at=NOW)
+    workflow = SimpleNamespace(workflow_id="wf", status=job.status, outcome="verified" if verified else "check_failed", plan_id="replacement", check_trace_ids=["passed"], execution_attempts=[SimpleNamespace(plan_id="old", kind="check", status="failed")], job=job, guidance=None)
+    dashboard = service([workflow])
+    dashboard.plans = SimpleNamespace(list=lambda *args: [SimpleNamespace(id=pid, status="failed", workspace="a", steps=[], updated_at=NOW) for pid in ["old", "unrelated"]])
+    result = dashboard.get("scope", "a")
+    plan_attention = [x.source_id for x in result.attention if x.source_type == "plan"]
+    assert "unrelated" in plan_attention
+    assert ("old" in plan_attention) is not verified
+    assert [x.source_id for x in result.history] == (["old"] if verified else [])
+    assert all(p.status == "failed" for p in result.plans)
+    assert workflow.status == job.status
+
+
+@pytest.mark.parametrize("attempts", [[], [SimpleNamespace(kind="patch", status="failed")]])
+def test_stopped_read_only_attempt_is_history_but_patch_failure_remains_visible(attempts):
+    job = CodingJob.model_construct(workflow_id="wf", job_id="wf", scope="scope", workspace="a", objective="edit", status="failed", next_action=CodingJobAction(action="none", allowed=False, reason="terminal"), observed_at=NOW)
+    workflow = SimpleNamespace(workflow_id="wf", status="failed", execution_attempts=attempts, job=job, guidance=None)
+    result = service([workflow]).get("scope", "a")
+    assert bool(result.attention) == bool(attempts)
+    assert bool(result.history) is not bool(attempts)
+    assert result.coding[0].status == "failed"
 
 
 def test_dashboard_api_requires_explicit_scope_and_workspace(monkeypatch):

@@ -206,7 +206,7 @@ project_state_service = ProjectStateService(workspace_registry, git, memory_serv
 project_briefing_service = ProjectBriefingService(project_state_service, provider_registry, settings)
 project_history_service = ProjectStateHistoryService(project_state_service, ProjectSnapshotStore(settings.action_journal_path))
 sub_agent_service = SubAgentService(settings.action_journal_path, provider_registry, tool_registry, WorkerModelRouter(settings, provider_registry))
-coding_workflow_service = CodingWorkflowService(settings.action_journal_path, workspace_registry, git, sub_agent_service, plan_service, execution_spec_service, execution_bridge, plan_execution, tool_registry)
+coding_workflow_service = CodingWorkflowService(settings.action_journal_path, workspace_registry, git, sub_agent_service, plan_service, execution_spec_service, execution_bridge, plan_execution, tool_registry, traces=execution_trace_service)
 coding_proposal_service = CodingProposalService(settings.action_journal_path, coding_workflow_service, workspace_registry, git)
 coding_job_service = CodingJobService(coding_workflow_service, coding_proposal_service, execution_spec_service, execution_trace_service, tool_registry)
 coding_action_service = SupervisorCodingActionService(coding_job_service, coding_workflow_service, coding_proposal_service, tool_registry)
@@ -1133,7 +1133,8 @@ async def create_coding_proposal(workflow_id: str, scope: str, request: Proposal
     try:
         return coding_proposal_service.create(workflow_id, scope, request)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail="Proposal unavailable") from exc
+        detail = str(exc) if str(exc).startswith("Requested test") else "Proposal unavailable"
+        raise HTTPException(status_code=409, detail=detail) from None
 
 
 _coding_generation_locks: dict[str, asyncio.Lock] = {}
@@ -1156,6 +1157,8 @@ async def generate_coding_proposal(workflow_id: str, scope: str, request: Coding
                 detail = "The model did not return a valid bounded proposal. Saved analysis is preserved; retry proposal generation."
             elif reason == "proposal must quote unique text from reviewed source":
                 detail = "The proposal did not match the saved source exactly. No files changed; retry proposal generation."
+            elif reason.startswith("Requested test"):
+                detail = reason + ". No proposal was saved and no files changed. Retry with the requested tests included."
             else:
                 detail = "A proposal requires accepted analysis, complete source evidence, and unchanged target files. Review the saved worker report before retrying."
             raise HTTPException(status_code=409, detail=detail) from None
@@ -1188,7 +1191,8 @@ async def dispatch_coding_job_action(workflow_id: str, request: CodingJobActionR
         await _resume_coding_workflow(workflow_id, request.scope)
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail="Coding job action unavailable") from exc
+        detail = str(exc) if str(exc).startswith("Verification conflicts:") else "Coding job action unavailable"
+        raise HTTPException(status_code=409, detail=detail) from None
 
 
 async def _resume_coding_workflow(workflow_id: str, scope: str) -> None:

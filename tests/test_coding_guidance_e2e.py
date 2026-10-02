@@ -47,7 +47,7 @@ def _services(tmp_path: Path, workspace: Path):
     agents = SubAgentService(database, providers=None, tools=tools)
     bridge = TrustedExecutionBridge(specs, tools)
     executor = PlanExecutionCoordinator(plans, tools, journal)
-    workflows = CodingWorkflowService(database, registry, git, agents, plans, specs, bridge, executor, tools)
+    workflows = CodingWorkflowService(database, registry, git, agents, plans, specs, bridge, executor, tools, traces=ExecutionTraceService(journal))
     proposals = CodingProposalService(database, workflows, registry, git)
     jobs = CodingJobService(workflows, proposals, specs, ExecutionTraceService(journal), tools)
     actions = SupervisorCodingActionService(jobs, workflows, proposals, tools)

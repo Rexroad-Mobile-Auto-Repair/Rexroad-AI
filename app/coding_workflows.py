@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.coding_contracts import requested_test_paths
+from app.coding_evidence import verification_conflicts
 from app.plans.bridge import TrustedExecutionBridge
 from app.plans.execution import PlanExecutionCoordinator
 from app.plans.models import PlanCreate, PlanStepCreate
@@ -40,6 +42,7 @@ class CodingWorkflowCreate(BaseModel):
     plan_id: str | None = None
     step_id: str | None = None
     team_evidence: list[str] = Field(default_factory=list, max_length=4)
+    required_test_paths: list[str] = Field(default_factory=list, max_length=5)
 
 
 class CodingExecutionAttempt(BaseModel):
@@ -60,6 +63,7 @@ class CodingWorkflow(BaseModel):
     scope: str
     workspace: str
     instruction: str
+    required_test_paths: list[str] = Field(default_factory=list, max_length=5)
     team_evidence: list[str] = Field(default_factory=list, max_length=4)
     status: str
     analyst_task_id: str | None = None
@@ -90,8 +94,9 @@ class CodingWorkflow(BaseModel):
 
 class CodingWorkflowService:
     MAX_ACTIONS = 5
-    def __init__(self, database_path: str | Path, workspaces: WorkspaceRegistry, git: ReadOnlyGit, agents: SubAgentService, plans: PlanService, specs: ExecutionSpecService, bridge: TrustedExecutionBridge, executor: PlanExecutionCoordinator, tools: ToolRegistry) -> None:
+    def __init__(self, database_path: str | Path, workspaces: WorkspaceRegistry, git: ReadOnlyGit, agents: SubAgentService, plans: PlanService, specs: ExecutionSpecService, bridge: TrustedExecutionBridge, executor: PlanExecutionCoordinator, tools: ToolRegistry, traces=None) -> None:
         self.path = Path(database_path); self.workspaces = workspaces; self.git = git; self.agents = agents; self.plans = plans; self.specs = specs; self.bridge = bridge; self.executor = executor; self.tools = tools
+        self.traces = traces
         with sqlite3.connect(self.path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS coding_workflows (workflow_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)")
 
@@ -99,7 +104,12 @@ class CodingWorkflowService:
         if not request.scope.strip(): raise ValueError("scope required")
         self.workspaces.get_root(request.workspace)
         now = datetime.now(UTC)
+        required_tests = request.required_test_paths or requested_test_paths(request.instruction)
+        for path in required_tests:
+            if not self.workspaces.resolve_path(request.workspace, path).is_file():
+                raise ValueError("required test file must exist in the selected workspace")
         item = CodingWorkflow(workflow_id=str(uuid4()), scope=request.scope, workspace=request.workspace, instruction=request.instruction, team_evidence=[text[:4000] for text in request.team_evidence], status="awaiting_analysis", parent_session_id=request.parent_session_id, parent_plan_id=request.plan_id, parent_step_id=request.step_id, created_at=now, updated_at=now)
+        item = item.model_copy(update={"required_test_paths": required_tests})
         self._save(item); return item
 
     def get(self, workflow_id: str, scope: str) -> CodingWorkflow | None:
@@ -258,8 +268,18 @@ class CodingWorkflowService:
     def review_verifier(self, workflow_id: str, scope: str, status: str, reviewer_session_id: str | None = None, note: str | None = None) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
         if item.status != "awaiting_verifier_review" or not item.verifier_task_id: raise ValueError("verifier review unavailable")
+        if status == "accepted" and self.traces is not None:
+            conflicts = self.verification_conflicts(workflow_id, scope)
+            if conflicts:
+                raise ValueError("Verification conflicts: " + " ".join(conflicts))
         review = self.agents.review(item.verifier_task_id, scope, status, reviewer_session_id, note)
         updated = item.model_copy(update={"verifier_review_status": review.status, "status": "completed" if status == "accepted" else "failed", "outcome": "verified" if status == "accepted" else "rejected"}); self._save(updated); return updated
+
+    def verification_conflicts(self, workflow_id: str, scope: str) -> list[str]:
+        item = self._require(workflow_id, scope)
+        if item.status != "awaiting_verifier_review" or self.traces is None:
+            return []
+        return verification_conflicts(item, self.workspaces, self.specs, self.traces, self.agents)
 
     def retry_verifier(self, workflow_id: str, scope: str, note: str | None = None) -> CodingWorkflow:
         item = self._require(workflow_id, scope)
